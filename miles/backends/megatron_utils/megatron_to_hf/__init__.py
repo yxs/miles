@@ -10,6 +10,7 @@ from .qwen2 import convert_qwen2_to_hf
 from .qwen3_5 import convert_qwen3_5_to_hf
 from .qwen3_next import convert_qwen3_next_to_hf
 from .qwen3moe import convert_qwen3moe_to_hf
+from .qwen3omni_moe import convert_qwen3omni_moe_to_hf
 
 
 # TODO unify w/ `convert_to_hf`
@@ -42,6 +43,8 @@ def _convert_to_hf_core(args, model_name, name, param):
         converted_named_tensors = convert_glm4moe_to_hf(args, name, param)
     elif "glm4" in model_name:
         converted_named_tensors = convert_glm4_to_hf(args, name, param)
+    elif "qwen3omni" in model_name:  # body.* names; keep before generic qwen3
+        converted_named_tensors = convert_qwen3omni_moe_to_hf(args, name, param)
     elif "qwen3moe" in model_name:
         converted_named_tensors = convert_qwen3moe_to_hf(args, name, param)
     elif "qwen3next" in model_name:

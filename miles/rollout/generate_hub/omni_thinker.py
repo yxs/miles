@@ -20,7 +20,12 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     sample = input.sample
     sampling_params = input.sampling_params
     assert sample.status in {Sample.Status.PENDING, Sample.Status.ABORTED}, f"{sample.status=}"
-    # omni thinker path is text-only with no MoE/indexer replay yet (server forward-declares both)
+    # omni /generate emits temp-1 (pre-temperature) full-vocab logprobs; the trainer recompute
+    # divides logits by rollout_temperature, so they agree only at temp=1.
+    assert args.rollout_temperature == 1.0, (
+        f"omni rollout logprob is temp-1; rollout_temperature must be 1.0, got {args.rollout_temperature}"
+    )
+    # text-only path with no MoE/indexer replay yet (server forward-declares both)
     assert not (args.use_rollout_routing_replay or args.use_rollout_indexer_replay), (
         "omni rollout has no routing/indexer replay; unset --use-rollout-routing-replay / --use-rollout-indexer-replay"
     )
@@ -47,7 +52,7 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
 
     payload["output_modalities"] = ["text"]
     payload["return_omni_rollout"] = False
-    # rep_penalty=1: only sampler warper the trainer recompute can't replay (temp it divides out symmetrically)
+    # rep_penalty=1: the trainer recompute can't replay a repetition penalty (logprobs would diverge)
     payload["sampling_params"]["repetition_penalty"] = 1.0
     if sample.metadata:
         payload["metadata"] = sample.metadata

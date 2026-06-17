@@ -125,7 +125,7 @@ def _omni_mod():
     return pytest.importorskip("miles.rollout.generate_hub.omni_thinker")
 
 
-def _omni_input(monkeypatch, omni, *, replay=False, indexer_replay=False, multimodal=None, metadata=None):
+def _omni_input(monkeypatch, omni, *, replay=False, indexer_replay=False, multimodal=None, metadata=None, temperature=1.0):
     """A generate() input with post/prompt-id mocked; returns (input, sample, captured)."""
     Sample = pytest.importorskip("miles.utils.types").Sample
     captured = {}
@@ -149,6 +149,7 @@ def _omni_input(monkeypatch, omni, *, replay=False, indexer_replay=False, multim
     args = SimpleNamespace(
         sglang_router_ip="127.0.0.1",
         sglang_router_port=30000,
+        rollout_temperature=temperature,
         use_rollout_routing_replay=replay,
         use_rollout_indexer_replay=indexer_replay,
         rollout_max_response_len=128,
@@ -202,4 +203,12 @@ def test_generate_rejects_multimodal_on_text_only_path(monkeypatch):
     omni = _omni_mod()
     inp, _, _ = _omni_input(monkeypatch, omni, multimodal={"images": ["img"]})
     with pytest.raises(AssertionError, match="text-only"):
+        asyncio.run(omni.generate(inp))
+
+
+def test_generate_rejects_nonunit_temperature(monkeypatch):
+    # omni emits temp-1 logprobs; the trainer recompute divides by rollout_temperature, so temp!=1 desyncs
+    omni = _omni_mod()
+    inp, _, _ = _omni_input(monkeypatch, omni, temperature=2.0)
+    with pytest.raises(AssertionError, match="temp-1"):
         asyncio.run(omni.generate(inp))

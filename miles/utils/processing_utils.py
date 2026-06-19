@@ -3,6 +3,7 @@ import inspect
 import io
 import logging
 import os
+import wave
 from pathlib import Path
 
 from huggingface_hub import hf_hub_download
@@ -173,3 +174,29 @@ def encode_image_for_rollout_engine(image) -> str:
     image.save(buffer, format="PNG")
     image_base64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
     return f"data:image/png;base64,{image_base64}"
+
+
+def encode_audio_for_rollout_engine(audio, sampling_rate: int) -> str:
+    """Encode a mono waveform as a base64 WAV data URI for the rollout engine.
+
+    Mirrors ``encode_image_for_rollout_engine`` for the audio modality. Accepts a
+    1-D array of float samples in [-1, 1] (converted to 16-bit PCM) or int16 samples.
+    """
+    import numpy as np
+
+    samples = np.asarray(audio)
+    if samples.ndim != 1:
+        raise ValueError(f"expected a 1-D mono waveform, got shape {samples.shape}")
+    if samples.dtype.kind == "f":
+        samples = (np.clip(samples, -1.0, 1.0) * 32767.0).astype(np.int16)
+    elif samples.dtype != np.int16:
+        samples = samples.astype(np.int16)
+
+    buffer = io.BytesIO()
+    with wave.open(buffer, "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(int(sampling_rate))
+        wav_file.writeframes(samples.tobytes())
+    audio_base64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
+    return f"data:audio/wav;base64,{audio_base64}"

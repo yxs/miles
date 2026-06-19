@@ -113,7 +113,7 @@ def parse_generate_response(response: dict[str, Any]) -> OmniRolloutResult:
     response_tokens: list[int] = []
     response_log_probs: list[float] = []
     for i, item in enumerate(token_logprobs):
-        if not isinstance(item, (list, tuple)) or len(item) < 2:
+        if not isinstance(item, (list, tuple)) or len(item) != 2:
             raise ValueError(
                 f"output_token_logprobs[{i}] is malformed: {item!r}; expected [log_prob, token_id]"
             )
@@ -154,10 +154,12 @@ def apply_response_to_sample(
 
     Follows the miles convention where ``loss_mask`` and ``rollout_log_probs`` span only
     the generated (completion) tokens (length == ``response_length``); the prompt is
-    excluded by lying outside the mask rather than by leading zeros. Standard meta_info
-    handling (status, weight-version, prefix-cache stats) stays with the caller via the
-    existing ``Sample.update_from_meta_info`` so this stays backend-agnostic and testable
-    without trainer ``args``.
+    excluded by lying outside the mask rather than by leading zeros. Decoded response
+    ``audio`` is stored in ``sample.metadata`` (reward-facing), never in
+    ``multimodal_train_inputs``. Standard meta_info handling (status, weight-version,
+    prefix-cache stats) stays with the caller via the existing
+    ``Sample.update_from_meta_info`` so this stays backend-agnostic and testable without
+    trainer ``args``.
     """
     if not sample.tokens:
         sample.tokens = list(prompt_ids)
@@ -176,8 +178,9 @@ def apply_response_to_sample(
         sample.loss_mask += [1] * len(result.response_tokens)
 
     if result.audio is not None:
-        if sample.multimodal_train_inputs is None:
-            sample.multimodal_train_inputs = {}
-        sample.multimodal_train_inputs["audio"] = result.audio
+        # Decoded response audio is reward-facing (e.g. ASR scoring), not a model-forward
+        # tensor. Keep it out of multimodal_train_inputs, which the training path moves to
+        # GPU and concatenates; store it in metadata instead.
+        sample.metadata["generated_audio"] = result.audio
 
     return sample

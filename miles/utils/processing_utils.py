@@ -189,8 +189,17 @@ def encode_audio_for_rollout_engine(audio, sampling_rate: int) -> str:
         raise ValueError(f"expected a 1-D mono waveform, got shape {samples.shape}")
     if samples.dtype.kind == "f":
         samples = (np.clip(samples, -1.0, 1.0) * 32767.0).astype(np.int16)
-    elif samples.dtype != np.int16:
+    elif samples.dtype == np.int16:
+        pass
+    elif samples.dtype.kind in ("i", "u"):
+        # Reject integer PCM that would silently wrap when narrowed to int16.
+        if samples.size and (int(samples.min()) < -32768 or int(samples.max()) > 32767):
+            raise ValueError(
+                "integer audio samples must already fit int16 PCM range [-32768, 32767]"
+            )
         samples = samples.astype(np.int16)
+    else:
+        raise ValueError(f"unsupported audio dtype {samples.dtype!r}; expected float or integer PCM")
 
     buffer = io.BytesIO()
     with wave.open(buffer, "wb") as wav_file:
@@ -200,3 +209,19 @@ def encode_audio_for_rollout_engine(audio, sampling_rate: int) -> str:
         wav_file.writeframes(samples.tobytes())
     audio_base64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
     return f"data:audio/wav;base64,{audio_base64}"
+
+
+def encode_audios_for_rollout_engine(audios) -> list[str]:
+    """Encode a list of waveform entries to base64 WAV data URIs for the rollout engine.
+
+    Each entry is a ``(waveform, sampling_rate)`` pair or a ``{"array", "sampling_rate"}``
+    dict, mirroring how ``images`` are carried in ``Sample.multimodal_inputs``.
+    """
+    encoded: list[str] = []
+    for item in audios:
+        if isinstance(item, dict):
+            waveform, sampling_rate = item["array"], item["sampling_rate"]
+        else:
+            waveform, sampling_rate = item
+        encoded.append(encode_audio_for_rollout_engine(waveform, sampling_rate))
+    return encoded

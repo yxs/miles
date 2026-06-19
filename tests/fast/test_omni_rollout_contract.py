@@ -115,6 +115,12 @@ def test_parse_generate_response_malformed_item_raises():
         parse_generate_response(_response([[-0.1]], completion_tokens=1))
 
 
+def test_parse_generate_response_rejects_overlong_logprob_entry():
+    # strict contract: each entry must be exactly [log_prob, token_id]
+    with pytest.raises(ValueError, match="malformed"):
+        parse_generate_response(_response([[-0.1, 10, "extra"]], completion_tokens=1))
+
+
 def test_parse_generate_response_missing_meta_info_raises():
     with pytest.raises(ValueError, match="meta_info"):
         parse_generate_response({"text": ""})
@@ -146,12 +152,14 @@ def test_apply_response_to_sample_aligns_and_validates():
     sample.validate()  # must not raise
 
 
-def test_apply_response_to_sample_captures_audio_into_train_inputs():
+def test_apply_response_to_sample_stores_audio_in_metadata_not_train_inputs():
     sample = Sample(prompt="p", tokens=[])
     result = parse_generate_response(_response([[-0.1, 5]], completion_tokens=1))
     result.audio = {"format": "wav", "data": "<b64>"}
     apply_response_to_sample(sample, [1, 2], result)
-    assert sample.multimodal_train_inputs["audio"] == {"format": "wav", "data": "<b64>"}
+    # reward-facing audio lives in metadata; multimodal_train_inputs stays tensor-only
+    assert sample.metadata["generated_audio"] == {"format": "wav", "data": "<b64>"}
+    assert sample.multimodal_train_inputs is None
 
 
 def test_apply_response_to_sample_multi_turn_accumulates():
@@ -188,3 +196,20 @@ def test_encode_audio_for_rollout_engine_roundtrips_wav():
 def test_encode_audio_for_rollout_engine_rejects_multichannel():
     with pytest.raises(ValueError, match="mono"):
         encode_audio_for_rollout_engine(np.zeros((2, 100), dtype=np.float32), 16000)
+
+
+def test_encode_audio_for_rollout_engine_rejects_out_of_range_int():
+    with pytest.raises(ValueError, match="int16"):
+        encode_audio_for_rollout_engine(np.array([0, 40000, -50000], dtype=np.int32), 16000)
+
+
+def test_encode_audios_for_rollout_engine_handles_tuples_and_dicts():
+    from miles.utils.processing_utils import encode_audios_for_rollout_engine
+
+    audios = [
+        (np.zeros(160, dtype=np.float32), 16000),
+        {"array": np.zeros(240, dtype=np.int16), "sampling_rate": 24000},
+    ]
+    uris = encode_audios_for_rollout_engine(audios)
+    assert len(uris) == 2
+    assert all(u.startswith("data:audio/wav;base64,") for u in uris)

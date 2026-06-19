@@ -58,6 +58,7 @@ def rollout(input_ids: list[int], seed: int):
 
 
 def main() -> None:
+    torch.cuda.set_device(0)  # bind this process to its visible GPU for NCCL collectives
     tok = AutoTokenizer.from_pretrained(THINKER, trust_remote_code=True)
     model = AutoModelForImageTextToText.from_pretrained(
         THINKER, dtype=torch.bfloat16, trust_remote_code=True, low_cpu_mem_usage=True

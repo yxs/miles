@@ -32,7 +32,7 @@ STEPS = int(os.environ.get("STEPS", "4"))
 GROUP = int(os.environ.get("GROUP", "4"))
 PROMPTS = int(os.environ.get("PROMPTS", "4"))
 MASTER_PORT = int(os.environ.get("MASTER_PORT", "29555"))
-GROUP_NAME = "gate_a_wsync"
+GROUP_NAME = os.environ.get("GROUP_NAME", "gate_a_wsync")
 EPS = 0.2
 
 

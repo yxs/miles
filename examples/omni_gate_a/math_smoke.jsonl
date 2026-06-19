@@ -1,0 +1,8 @@
+{"prompt": "Question: What is 7 plus 5?\nAnswer:", "label": "12"}
+{"prompt": "Question: What is 9 plus 6?\nAnswer:", "label": "15"}
+{"prompt": "Question: What is 8 times 3?\nAnswer:", "label": "24"}
+{"prompt": "Question: What is 12 minus 4?\nAnswer:", "label": "8"}
+{"prompt": "Question: What is 6 times 7?\nAnswer:", "label": "42"}
+{"prompt": "Question: What is 20 plus 13?\nAnswer:", "label": "33"}
+{"prompt": "Question: What is 45 minus 18?\nAnswer:", "label": "27"}
+{"prompt": "Question: What is 9 times 9?\nAnswer:", "label": "81"}

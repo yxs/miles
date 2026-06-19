@@ -141,3 +141,43 @@ def test_omni_generate_fn_encodes_input_audio(monkeypatch):
     audio_data = captured["payload"]["audio_data"]
     assert len(audio_data) == 1
     assert audio_data[0].startswith("data:audio/wav;base64,")
+
+
+def test_omni_generate_fn_resume_keeps_loss_mask_aligned(monkeypatch):
+    async def fake_post(url, payload, **kwargs):
+        # resume turn: only the newly generated tokens come back
+        return {
+            "text": " more",
+            "meta_info": {
+                "finish_reason": {"type": "stop"},
+                "output_token_logprobs": [[-0.3, 20], [-0.4, 21]],
+                "completion_tokens": 2,
+                "cached_tokens": 0,
+                "prompt_tokens": 5,
+            },
+        }
+
+    monkeypatch.setattr(omni_mod, "post", fake_post)
+
+    fn = load_generate_function(_HOOK_PATH)
+    sample = Sample(prompt="hi")
+    # simulate a partial rollout whose off-policy response was pre-masked by generate_and_rm
+    sample.tokens = [1, 2, 3, 10, 11]  # prompt [1,2,3] + old response [10,11]
+    sample.response = "old"
+    sample.response_length = 2
+    sample.loss_mask = [0, 0]  # off-policy tokens masked off
+    sample.rollout_log_probs = [-0.1, -0.2]
+    inp = GenerateFnInput(
+        state=_fake_state(),
+        sample=sample,
+        sampling_params={"max_new_tokens": 64},
+        evaluation=False,
+    )
+
+    out = asyncio.run(fn(inp))
+    s = out.samples
+    assert s.tokens == [1, 2, 3, 10, 11, 20, 21]
+    assert s.response_length == 4
+    # new on-policy tokens are trainable; mask stays aligned with response_length
+    assert s.loss_mask == [0, 0, 1, 1]
+    assert len(s.loss_mask) == s.response_length

@@ -211,6 +211,18 @@ def encode_audio_for_rollout_engine(audio, sampling_rate: int) -> str:
     return f"data:audio/wav;base64,{audio_base64}"
 
 
+def extract_audio_inputs(multimodal_inputs: dict | None):
+    """Return the audio entries from ``multimodal_inputs`` (or ``None``).
+
+    Canonical accessor shared by the rollout payload builders so the omni hook and the
+    generic path agree on keying. Accepts ``"audios"`` (plural, parallel to ``"images"``)
+    and the singular ``"audio"`` (matching ``MultimodalTypes.AUDIO.name``).
+    """
+    if not multimodal_inputs:
+        return None
+    return multimodal_inputs.get("audios") or multimodal_inputs.get("audio")
+
+
 def encode_audios_for_rollout_engine(audios) -> list[str]:
     """Encode a list of waveform entries to base64 WAV data URIs for the rollout engine.
 

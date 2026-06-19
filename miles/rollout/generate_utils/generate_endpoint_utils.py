@@ -10,10 +10,19 @@ import pybase64
 
 from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
 from miles.utils.processing_utils import (
+    call_processor,
     encode_audios_for_rollout_engine,
     encode_image_for_rollout_engine,
+    extract_audio_inputs,
 )
 from miles.utils.types import Sample
+
+
+def _to_int_list(ids) -> list[int]:
+    """Coerce processor/tokenizer output (tensor / ndarray / list) to a JSON-safe list[int]."""
+    if hasattr(ids, "tolist"):
+        ids = ids.tolist()
+    return [int(token) for token in ids]
 
 
 # Make this an isolated function because users may want to compute their own
@@ -21,8 +30,9 @@ def compute_prompt_ids_from_sample(state, sample, tools=None):
     prompt = sample.prompt
 
     if state.processor and sample.multimodal_inputs and any(v is not None for v in sample.multimodal_inputs.values()):
-        processor_output = state.processor(text=prompt, **sample.multimodal_inputs)
-        prompt_ids = processor_output["input_ids"][0]
+        # Route through call_processor so per-modality kwargs (incl. audio_kwargs) are applied.
+        processor_output = call_processor(state.processor, prompt, sample.multimodal_inputs)
+        prompt_ids = _to_int_list(processor_output["input_ids"][0])
 
         # TODO shall we move it to other places? then can make this function immutable
         sample.multimodal_train_inputs = {
@@ -63,8 +73,8 @@ def compute_request_payload(
         payload["lora_path"] = LORA_ADAPTER_NAME
     if image_data := (multimodal_inputs or {}).get("images"):
         payload["image_data"] = [encode_image_for_rollout_engine(image) for image in image_data]
-    if audio_data := (multimodal_inputs or {}).get("audios"):
-        payload["audio_data"] = encode_audios_for_rollout_engine(audio_data)
+    if audio_inputs := extract_audio_inputs(multimodal_inputs):
+        payload["audio_data"] = encode_audios_for_rollout_engine(audio_inputs)
 
     return payload, None
 

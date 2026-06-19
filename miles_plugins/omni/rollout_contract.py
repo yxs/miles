@@ -154,7 +154,9 @@ def apply_response_to_sample(
 
     Follows the miles convention where ``loss_mask`` and ``rollout_log_probs`` span only
     the generated (completion) tokens (length == ``response_length``); the prompt is
-    excluded by lying outside the mask rather than by leading zeros. Decoded response
+    excluded by lying outside the mask rather than by leading zeros. A loss mask is
+    appended for the new tokens whenever ``update_loss_mask`` is set OR a mask already
+    exists (partial-rollout off-policy masking), keeping it aligned with response_length. Decoded response
     ``audio`` is stored in ``sample.metadata`` (reward-facing), never in
     ``multimodal_train_inputs``. Standard meta_info handling (status, weight-version,
     prefix-cache stats) stays with the caller via the existing
@@ -172,7 +174,11 @@ def apply_response_to_sample(
         sample.rollout_log_probs = []
     sample.rollout_log_probs += result.response_log_probs
 
-    if update_loss_mask:
+    # Append mask entries when explicitly requested OR when a mask already exists. The
+    # latter covers partial-rollout off-policy masking, where generate_and_rm pre-sets
+    # loss_mask = [0] * old_response_length; the newly generated tokens are on-policy and
+    # trainable, and the mask must stay aligned with response_length.
+    if update_loss_mask or sample.loss_mask is not None:
         if sample.loss_mask is None:
             sample.loss_mask = []
         sample.loss_mask += [1] * len(result.response_tokens)

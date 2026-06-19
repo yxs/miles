@@ -176,6 +176,24 @@ def test_apply_response_to_sample_multi_turn_accumulates():
     assert sample.loss_mask == [1, 1, 1]
 
 
+def test_apply_response_to_sample_appends_to_existing_loss_mask():
+    # partial-rollout off-policy masking: a [0] mask already exists, new tokens must be appended
+    sample = Sample(
+        prompt="p",
+        tokens=[1, 2, 3, 10],
+        response="old",
+        response_length=1,
+        loss_mask=[0],
+        rollout_log_probs=[-0.1],
+    )
+    result = parse_generate_response(_response([[-0.2, 20], [-0.3, 21]], completion_tokens=2))
+    apply_response_to_sample(sample, [1, 2, 3], result)  # update_loss_mask defaults False
+    assert sample.response_length == 3
+    assert sample.loss_mask == [0, 1, 1]
+    assert len(sample.loss_mask) == sample.response_length
+    sample.validate()
+
+
 # --- audio encode helper ---------------------------------------------------------------
 
 
@@ -213,3 +231,44 @@ def test_encode_audios_for_rollout_engine_handles_tuples_and_dicts():
     uris = encode_audios_for_rollout_engine(audios)
     assert len(uris) == 2
     assert all(u.startswith("data:audio/wav;base64,") for u in uris)
+
+
+# --- generic compute_request_payload audio + deferral marker -------------------------------
+
+
+@pytest.mark.parametrize("audio_key", ["audios", "audio"])
+def test_compute_request_payload_emits_audio_data(audio_key):
+    from types import SimpleNamespace
+
+    from miles.rollout.generate_utils.generate_endpoint_utils import compute_request_payload
+
+    args = SimpleNamespace(
+        rollout_max_response_len=128,
+        rollout_max_context_len=0,
+        use_rollout_routing_replay=False,
+        use_rollout_indexer_replay=False,
+    )
+    payload, halt = compute_request_payload(
+        args,
+        input_ids=[1, 2, 3],
+        sampling_params={"max_new_tokens": 16},
+        multimodal_inputs={audio_key: [(np.zeros(160, dtype=np.float32), 16000)]},
+    )
+    assert halt is None
+    assert len(payload["audio_data"]) == 1
+    assert payload["audio_data"][0].startswith("data:audio/wav;base64,")
+
+
+@pytest.mark.xfail(
+    reason=(
+        "audio-INPUT token expansion (audio placeholder -> feature tokens) is not implemented "
+        "in mm_data.py. It is only needed for audio-input models (e.g. Qwen3-Omni understanding), "
+        "NOT the text-input MVP gates, where codec OUTPUT tokens are first-class sequence tokens. "
+        "Deferred to the audio-input-model milestone."
+    ),
+    strict=True,
+)
+def test_mm_data_audio_input_token_expansion_present():
+    from miles.backends.training_utils import mm_data
+
+    assert hasattr(mm_data, "expand_audio_rollout_data_in_place")

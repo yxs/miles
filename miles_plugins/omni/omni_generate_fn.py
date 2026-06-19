@@ -13,7 +13,7 @@ from __future__ import annotations
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_utils.generate_endpoint_utils import compute_prompt_ids_from_sample
 from miles.utils.http_utils import post
-from miles.utils.processing_utils import encode_audios_for_rollout_engine
+from miles.utils.processing_utils import encode_audios_for_rollout_engine, extract_audio_inputs
 from miles.utils.types import Sample
 
 from .rollout_contract import apply_response_to_sample, build_generate_payload, parse_generate_response
@@ -82,9 +82,7 @@ def _clamp_max_new_tokens(args, sampling_params: dict, prompt_len: int) -> Sampl
 
 def _encode_input_audio(sample: Sample) -> list[str] | None:
     """Encode input-side audio from ``sample.multimodal_inputs`` for the request payload."""
-    if not sample.multimodal_inputs:
-        return None
-    audios = sample.multimodal_inputs.get("audios") or sample.multimodal_inputs.get("audio")
+    audios = extract_audio_inputs(sample.multimodal_inputs)
     if not audios:
         return None
     return encode_audios_for_rollout_engine(audios)

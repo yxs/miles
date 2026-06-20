@@ -10,8 +10,16 @@ accepts plain ``model.*`` names, so the extracted-thinker names sync directly.
 
 Run (container, miles venv, free GPU for the trainer; server already on another GPU):
     THINKER=/root/qwen3-omni-thinker DATA=examples/omni_gate_a/math_smoke.jsonl \
-    SERVER=http://localhost:8000 MASTER_PORT=29555 CUDA_DEVICE_ORDER=PCI_BUS_ID \
-    CUDA_VISIBLE_DEVICES=4 python examples/omni_gate_a/gate_a_full.py
+    SERVER=http://localhost:8003 MASTER_PORT=29631 CUDA_VISIBLE_DEVICES=4 \
+    NCCL_P2P_DISABLE=1 NCCL_CUMEM_ENABLE=0 NCCL_NVLS_ENABLE=0 \
+    python examples/omni_gate_a/gate_a_full.py
+
+CRITICAL: the trainer and the sglang-omni server run as separate processes, each with a
+single GPU exposed via CUDA_VISIBLE_DEVICES (both see it as cuda:0). NCCL would try direct
+P2P between the two physical GPUs and fail with "Cuda invalid argument" because neither
+process can resolve the peer's masked device. Set NCCL_P2P_DISABLE=1 on BOTH the server
+and the trainer so NCCL falls back to shared-memory transport. Verified: 4-step on-policy
+run, synced_params=160/step, stable loss/reward.
 """
 
 from __future__ import annotations

@@ -1,0 +1,126 @@
+diff --git a/sglang_omni/models/higgs_tts/model_runner.py b/sglang_omni/models/higgs_tts/model_runner.py
+index c579e46..0d04a59 100644
+--- a/sglang_omni/models/higgs_tts/model_runner.py
++++ b/sglang_omni/models/higgs_tts/model_runner.py
+@@ -299,6 +299,8 @@ class HiggsTTSModelRunner(ModelRunner):
+                 continue
+             codes_N = codes_BN_cpu[b].to(torch.long).clone()
+             data.output_codes.append(codes_N)
++            nt = getattr(result.logits_output, "next_token_logits", None)
++            self._record_rollout_logprob(data, nt[b] if nt is not None else None, int(codes_N[0].item()))
+             data.generation_done = bool(gen_done_after_cpu[b])
+             self._emit_code_chunk(sched_req, codes_N)
+             self._mark_sampler_finished(req, data.generation_done)
+@@ -364,7 +366,7 @@ class HiggsTTSModelRunner(ModelRunner):
+ 
+         model = self.model
+         cb0_per_row: list[int] = []
+-        for sched_req in requests:
++        for b, sched_req in enumerate(requests):
+             data = sched_req.data
+             req = data.req
+             rid = sched_req.request_id
+@@ -375,6 +377,8 @@ class HiggsTTSModelRunner(ModelRunner):
+                 continue
+             codes_N = codes_log[-1]
+             data.output_codes.append(codes_N.detach().cpu().clone())
++            nt = getattr(result.logits_output, "next_token_logits", None)
++            self._record_rollout_logprob(data, nt[b] if nt is not None else None, int(codes_N[0].item()))
+             data.generation_done = bool(model._sampler_pool.generation_done[row].item())
+             self._emit_code_chunk(sched_req, data.output_codes[-1])
+             self._mark_sampler_finished(req, data.generation_done)
+@@ -392,6 +396,17 @@ class HiggsTTSModelRunner(ModelRunner):
+         if generation_done and req.finished_reason is None:
+             req.finished_reason = FINISH_MATCHED_TOKEN(EOC_ID)
+ 
++    @staticmethod
++    def _record_rollout_logprob(data, logits_row, cb0_token):
++        """Record codebook-0 codec token + its logprob for RL rollout."""
++        if not getattr(data, "return_logprob", False):
++            return
++        if logits_row is None:
++            data.output_token_logprobs.append([0.0, int(cb0_token)])
++            return
++        logp = torch.log_softmax(logits_row.float(), dim=-1)
++        data.output_token_logprobs.append([float(logp[int(cb0_token)].item()), int(cb0_token)])
++
+     def _emit_code_chunk(self, sched_req: Any, codes_N: torch.Tensor) -> None:
+         if self._outbox is None:
+             return
+diff --git a/sglang_omni/models/higgs_tts/payload_types.py b/sglang_omni/models/higgs_tts/payload_types.py
+index 079f540..11416f3 100644
+--- a/sglang_omni/models/higgs_tts/payload_types.py
++++ b/sglang_omni/models/higgs_tts/payload_types.py
+@@ -46,6 +46,9 @@ class HiggsTtsState:
+     audio_samples: Any | None = None
+     sample_rate: int = 24000
+ 
++    # rollout
++    output_token_logprobs: list[Any] | None = None
++
+     def to_dict(self) -> dict[str, Any]:
+         data: dict[str, Any] = {
+             "prompt_token_ids": list(self.prompt_token_ids),
+@@ -81,6 +84,8 @@ class HiggsTtsState:
+         if self.audio_samples is not None:
+             data["audio_samples"] = self.audio_samples
+             data["sample_rate"] = self.sample_rate
++        if self.output_token_logprobs is not None:
++            data["output_token_logprobs"] = self.output_token_logprobs
+         return data
+ 
+     @classmethod
+@@ -107,6 +112,7 @@ class HiggsTtsState:
+             engine_time_s=data.get("engine_time_s", 0.0),
+             audio_samples=data.get("audio_samples"),
+             sample_rate=data.get("sample_rate", 24000),
++            output_token_logprobs=data.get("output_token_logprobs"),
+         )
+ 
+ 
+diff --git a/sglang_omni/models/higgs_tts/request_builders.py b/sglang_omni/models/higgs_tts/request_builders.py
+index f5b82dd..6d3d7d3 100644
+--- a/sglang_omni/models/higgs_tts/request_builders.py
++++ b/sglang_omni/models/higgs_tts/request_builders.py
+@@ -153,6 +153,9 @@ def apply_higgs_result(state: HiggsTtsState, data: HiggsSGLangRequestData) -> No
+     else:
+         state.output_codes_delayed = None
+     state.prompt_tokens = len(data.input_ids)
++    state.output_token_logprobs = (
++        list(data.output_token_logprobs) if data.output_token_logprobs else None
++    )
+ 
+ 
+ def make_higgs_scheduler_adapters(
+@@ -176,6 +179,8 @@ def make_higgs_scheduler_adapters(
+                 int(max_new_tokens_cap),
+             )
+         data = build_sglang_higgs_request(state, request_id=payload.request_id)
++        _params = payload.request.params if isinstance(payload.request.params, dict) else {}
++        data.return_logprob = bool(_params.get("return_logprob"))
+         data.engine_start_s = _perf_counter()
+         data.stage_payload = payload
+         data.stream_metadata = build_higgs_stream_metadata(payload, data)
+diff --git a/sglang_omni/models/higgs_tts/vocoder_scheduler.py b/sglang_omni/models/higgs_tts/vocoder_scheduler.py
+index e70373b..3bf0b2d 100644
+--- a/sglang_omni/models/higgs_tts/vocoder_scheduler.py
++++ b/sglang_omni/models/higgs_tts/vocoder_scheduler.py
+@@ -199,6 +199,9 @@ class HiggsStreamingVocoderScheduler(StreamingSimpleScheduler):
+         usage = self._build_usage(HiggsTtsState.from_dict(payload.data))
+         if usage is not None:
+             final_data["usage"] = usage
++        _lp = payload.data.get("output_token_logprobs") if isinstance(payload.data, dict) else None
++        if _lp is not None:
++            final_data["output_token_logprobs"] = _lp
+         messages.append(
+             OutgoingMessage(
+                 request_id=request_id,
+@@ -485,6 +488,8 @@ class HiggsStreamingVocoderScheduler(StreamingSimpleScheduler):
+         usage = self._build_usage(state)
+         if usage is not None:
+             data["usage"] = usage
++        if state.output_token_logprobs is not None:
++            data["output_token_logprobs"] = state.output_token_logprobs
+         payload.data = data
+         return payload
+ 

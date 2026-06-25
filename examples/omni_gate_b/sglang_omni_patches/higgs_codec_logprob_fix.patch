@@ -1,0 +1,95 @@
+diff --git a/sglang_omni/models/higgs_tts/model.py b/sglang_omni/models/higgs_tts/model.py
+index 3e68894..e32137e 100644
+--- a/sglang_omni/models/higgs_tts/model.py
++++ b/sglang_omni/models/higgs_tts/model.py
+@@ -170,6 +170,12 @@ class HiggsTTSModel(nn.Module):
+         self._cg_codes_BN = torch.zeros(
+             pool_size, num_codebooks, dtype=torch.long, device=cg_device
+         )
++        # Per-row codebook-0 log-prob of the sampled token, for RL rollout. Written
++        # in-place each step (eager prefill + CUDA-graph decode) so the runner records
++        # the true behavior-policy logprob instead of a text-vocab placeholder.
++        self._step_cb0_logprob = torch.zeros(
++            pool_size, dtype=torch.float32, device=cg_device
++        )
+         # Note(Jiaxin): Packs codes_BN | was_done | active_generation_done into one buffer.
+         self._cg_collect_staging = torch.zeros(
+             pool_size, num_codebooks + 2, dtype=torch.long, device=cg_device
+@@ -305,6 +311,13 @@ class HiggsTTSModel(nn.Module):
+         # Note(yichi): One D2H per step to skip STOP-sentinel rows in the Python append loop.
+         was_done_cpu = was_done.cpu().tolist()
+         codes_BN = codes_BN.detach().to(torch.long)
++
++        # Codebook-0 log-prob of each sampled token, for RL rollout. Indexed by
++        # forward-batch row (aligned with the runner's per-request collect loop).
++        cb0_logits = logits_BNV[:, 0, :]
++        cb0_idx = codes_BN[:, 0:1].clamp(0, cb0_logits.shape[-1] - 1)
++        cb0_lp = torch.log_softmax(cb0_logits, dim=-1).gather(1, cb0_idx).squeeze(1)
++        self._step_cb0_logprob[:batch_size] = cb0_lp
+         for b in range(batch_size):
+             if was_done_cpu[b]:
+                 continue
+@@ -365,6 +378,13 @@ class HiggsTTSModel(nn.Module):
+         self._cg_active_last_codes[:batch_size] = new_last_codes_BN
+         self._cg_codes_BN[:batch_size] = codes_BN
+ 
++        # Codebook-0 log-prob of each sampled token, for RL rollout. In-place buffer
++        # write (no value-dependent control flow / D2H) keeps this CUDA-graph safe.
++        cb0_logits = logits_BNV[:, 0, :]
++        cb0_idx = codes_BN[:, 0:1].long().clamp(0, cb0_logits.shape[-1] - 1)
++        cb0_lp = torch.log_softmax(cb0_logits, dim=-1).gather(1, cb0_idx).squeeze(1)
++        self._step_cb0_logprob[:batch_size] = cb0_lp
++
+         text_vocab_size = self.backbone.config.vocab_size
+         return torch.zeros(
+             (batch_size, text_vocab_size),
+diff --git a/sglang_omni/models/higgs_tts/model_runner.py b/sglang_omni/models/higgs_tts/model_runner.py
+index 0d04a59..6a5aa31 100644
+--- a/sglang_omni/models/higgs_tts/model_runner.py
++++ b/sglang_omni/models/higgs_tts/model_runner.py
+@@ -299,8 +299,8 @@ class HiggsTTSModelRunner(ModelRunner):
+                 continue
+             codes_N = codes_BN_cpu[b].to(torch.long).clone()
+             data.output_codes.append(codes_N)
+-            nt = getattr(result.logits_output, "next_token_logits", None)
+-            self._record_rollout_logprob(data, nt[b] if nt is not None else None, int(codes_N[0].item()))
++            lpv = getattr(self.model, "_step_cb0_logprob", None)
++            self._record_rollout_logprob(data, lpv[b] if lpv is not None else None, int(codes_N[0].item()))
+             data.generation_done = bool(gen_done_after_cpu[b])
+             self._emit_code_chunk(sched_req, codes_N)
+             self._mark_sampler_finished(req, data.generation_done)
+@@ -377,8 +377,8 @@ class HiggsTTSModelRunner(ModelRunner):
+                 continue
+             codes_N = codes_log[-1]
+             data.output_codes.append(codes_N.detach().cpu().clone())
+-            nt = getattr(result.logits_output, "next_token_logits", None)
+-            self._record_rollout_logprob(data, nt[b] if nt is not None else None, int(codes_N[0].item()))
++            lpv = getattr(self.model, "_step_cb0_logprob", None)
++            self._record_rollout_logprob(data, lpv[b] if lpv is not None else None, int(codes_N[0].item()))
+             data.generation_done = bool(model._sampler_pool.generation_done[row].item())
+             self._emit_code_chunk(sched_req, data.output_codes[-1])
+             self._mark_sampler_finished(req, data.generation_done)
+@@ -397,15 +397,16 @@ class HiggsTTSModelRunner(ModelRunner):
+             req.finished_reason = FINISH_MATCHED_TOKEN(EOC_ID)
+ 
+     @staticmethod
+-    def _record_rollout_logprob(data, logits_row, cb0_token):
+-        """Record codebook-0 codec token + its logprob for RL rollout."""
++    def _record_rollout_logprob(data, cb0_logprob, cb0_token):
++        """Record a sampled codebook-0 codec token + its log-prob for RL rollout.
++
++        ``cb0_logprob`` is the model's pre-computed codebook-0 log-prob of the sampled
++        token (the true behavior-policy logprob); ``None`` falls back to 0.0.
++        """
+         if not getattr(data, "return_logprob", False):
+             return
+-        if logits_row is None:
+-            data.output_token_logprobs.append([0.0, int(cb0_token)])
+-            return
+-        logp = torch.log_softmax(logits_row.float(), dim=-1)
+-        data.output_token_logprobs.append([float(logp[int(cb0_token)].item()), int(cb0_token)])
++        lp = 0.0 if cb0_logprob is None else float(cb0_logprob)
++        data.output_token_logprobs.append([lp, int(cb0_token)])
+ 
+     def _emit_code_chunk(self, sched_req: Any, codes_N: torch.Tensor) -> None:
+         if self._outbox is None:

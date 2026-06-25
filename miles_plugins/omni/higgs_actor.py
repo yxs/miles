@@ -122,7 +122,7 @@ class HiggsTtsActor:
         T = int(codes.shape[0])
         P = int(prompt.shape[0])
 
-        text_emb = self.backbone.embed_tokens(prompt)  # [P, D]
+        text_emb = self.backbone.get_input_embeddings()(prompt)  # [P, D]; LoRA-wrap safe
         # Teacher forcing: step t (t>=1) is predicted from the embedding of step t-1's
         # full codes; step 0 is predicted from the last prompt token. So feed prompt +
         # codes[0..T-2]; read hidden at positions P-1 .. P+T-2 for steps 0 .. T-1.

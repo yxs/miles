@@ -71,6 +71,17 @@ class RolloutManager:
 
         if self.args.debug_train_only:
             self.servers: dict[str, RolloutServer] = {}
+        elif getattr(self.args, "rollout_external", False):
+            # External rollout engine (e.g. an sglang-omni server hosting an omni pipeline):
+            # do not launch internal sglang servers; point the router at the supplied external
+            # address so the custom generate function reaches it directly.
+            init_http_client(args)
+            addrs = self.args.rollout_external_engine_addrs
+            addr = addrs[0] if isinstance(addrs, (list, tuple)) else addrs
+            ip, _, port = str(addr).rpartition(":")
+            self.args.sglang_router_ip = ip
+            self.args.sglang_router_port = int(port)
+            self.servers: dict[str, RolloutServer] = {}
         else:
             init_http_client(args)
             self.servers = start_rollout_servers(args, pg)

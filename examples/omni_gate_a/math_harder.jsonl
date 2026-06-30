@@ -1,0 +1,10 @@
+{"prompt": "Question: What is 47 multiplied by 83?\nAnswer:", "label": "3901"}
+{"prompt": "Question: Compute 234 plus 567 minus 98.\nAnswer:", "label": "703"}
+{"prompt": "Question: A train travels 63 km per hour for 7 hours. How many km does it travel?\nAnswer:", "label": "441"}
+{"prompt": "Question: What is 96 divided by 4, then multiplied by 5?\nAnswer:", "label": "120"}
+{"prompt": "Question: There are 18 boxes with 24 items each. How many items in total?\nAnswer:", "label": "432"}
+{"prompt": "Question: What is 15 squared minus 100?\nAnswer:", "label": "125"}
+{"prompt": "Question: What is the area of a rectangle that is 23 cm by 17 cm, in square cm?\nAnswer:", "label": "391"}
+{"prompt": "Question: What is 1000 minus 7 times 13?\nAnswer:", "label": "909"}
+{"prompt": "Question: What is the sum of all integers from 1 to 20?\nAnswer:", "label": "210"}
+{"prompt": "Question: What is 19 multiplied by 21?\nAnswer:", "label": "399"}

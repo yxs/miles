@@ -41,6 +41,7 @@ GROUP = int(os.environ.get("GROUP", "4"))
 PROMPTS = int(os.environ.get("PROMPTS", "4"))
 MASTER_PORT = int(os.environ.get("MASTER_PORT", "29555"))
 GROUP_NAME = os.environ.get("GROUP_NAME", "gate_a_wsync")
+MAX_NEW = int(os.environ.get("MAX_NEW", "24"))
 EPS = 0.2
 
 
@@ -56,7 +57,7 @@ def rollout(input_ids: list[int], seed: int):
         "/generate",
         {
             "input_ids": input_ids,
-            "sampling_params": {"temperature": 0.8, "top_p": 0.95, "max_new_tokens": 24, "seed": seed},
+            "sampling_params": {"temperature": 0.8, "top_p": 0.95, "max_new_tokens": MAX_NEW, "seed": seed},
             "return_logprob": True,
         },
         timeout=120,

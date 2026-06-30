@@ -1,4 +1,4 @@
-"""Logprob-parity gate for the GATE-B trainable TTS actor.
+"""Logprob-parity check for the Higgs TTS trainable actor.
 
 Right after load the trainer-side actor and the served model are the same policy,
 so the actor's recomputed codebook-0 log-probs must match the rollout's
@@ -8,7 +8,7 @@ GRPO update.
 Run (container, miles venv; Higgs server serving on SERVER):
     SERVER=http://localhost:8010 HIGGS_CKPT='<snapshot glob>' CUDA_VISIBLE_DEVICES=4 \
     PYTHONPATH=/root/rl-omni/sglang-omni:/root/rl-omni/miles \
-    python examples/omni_gate_b/gate_b_parity_probe.py
+    python examples/higgs_tts_rl/logprob_parity_probe.py
 """
 
 from __future__ import annotations

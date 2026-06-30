@@ -1,0 +1,10 @@
+{"prompt": [{"role": "user", "content": "What is 47 multiplied by 83? Give only the final integer."}], "label": "3901"}
+{"prompt": [{"role": "user", "content": "Compute 234 plus 567 minus 98. Give only the final integer."}], "label": "703"}
+{"prompt": [{"role": "user", "content": "A train travels 63 km per hour for 7 hours. How many km does it travel? Give only the final integer."}], "label": "441"}
+{"prompt": [{"role": "user", "content": "What is 96 divided by 4, then multiplied by 5? Give only the final integer."}], "label": "120"}
+{"prompt": [{"role": "user", "content": "There are 18 boxes with 24 items each. How many items in total? Give only the final integer."}], "label": "432"}
+{"prompt": [{"role": "user", "content": "What is 15 squared minus 100? Give only the final integer."}], "label": "125"}
+{"prompt": [{"role": "user", "content": "What is the area of a rectangle that is 23 cm by 17 cm, in square cm? Give only the final integer."}], "label": "391"}
+{"prompt": [{"role": "user", "content": "What is 1000 minus 7 times 13? Give only the final integer."}], "label": "909"}
+{"prompt": [{"role": "user", "content": "What is the sum of all integers from 1 to 20? Give only the final integer."}], "label": "210"}
+{"prompt": [{"role": "user", "content": "What is 19 multiplied by 21? Give only the final integer."}], "label": "399"}

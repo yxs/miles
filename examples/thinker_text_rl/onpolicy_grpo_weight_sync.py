@@ -1,7 +1,7 @@
-"""Full on-policy GATE-A: GRPO LoRA RL on the Qwen3-Omni Thinker with per-step NCCL
+"""Full on-policy Thinker text RL: GRPO LoRA on the Qwen3-Omni Thinker with per-step NCCL
 weight-sync to the served sglang-omni thinker, so each step's rollouts are on-policy.
 
-Beyond gate_a_lora_smoke.py this adds the 4th closed-loop component done *properly*:
+Beyond lora_grpo_smoke.py this adds the 4th closed-loop component done *properly*:
 after each optimizer step the LoRA-merged thinker weights are broadcast into the served
 thinker stage via sglang-omni's distributed weight-update admin plane
 (``/init_weights_update_group`` + ``/update_weights_from_distributed`` + ``stages=[thinker]``),
@@ -9,10 +9,10 @@ the exact pattern from sglang-omni's E2E refit test. The thinker stage's ``load_
 accepts plain ``model.*`` names, so the extracted-thinker names sync directly.
 
 Run (container, miles venv, free GPU for the trainer; server already on another GPU):
-    THINKER=/root/qwen3-omni-thinker DATA=examples/omni_gate_a/math_smoke.jsonl \
+    THINKER=/root/qwen3-omni-thinker DATA=examples/thinker_text_rl/math_smoke.jsonl \
     SERVER=http://localhost:8003 MASTER_PORT=29631 CUDA_VISIBLE_DEVICES=4 \
     NCCL_P2P_DISABLE=1 NCCL_CUMEM_ENABLE=0 NCCL_NVLS_ENABLE=0 \
-    python examples/omni_gate_a/gate_a_full.py
+    python examples/thinker_text_rl/onpolicy_grpo_weight_sync.py
 
 CRITICAL: the trainer and the sglang-omni server run as separate processes, each with a
 single GPU exposed via CUDA_VISIBLE_DEVICES (both see it as cuda:0). NCCL would try direct
@@ -40,7 +40,7 @@ STEPS = int(os.environ.get("STEPS", "4"))
 GROUP = int(os.environ.get("GROUP", "4"))
 PROMPTS = int(os.environ.get("PROMPTS", "4"))
 MASTER_PORT = int(os.environ.get("MASTER_PORT", "29555"))
-GROUP_NAME = os.environ.get("GROUP_NAME", "gate_a_wsync")
+GROUP_NAME = os.environ.get("GROUP_NAME", "thinker_wsync")
 MAX_NEW = int(os.environ.get("MAX_NEW", "24"))
 EPS = 0.2
 
@@ -188,7 +188,7 @@ def main() -> None:
         synced = sync_to_server()  # next step's rollouts are on-policy
         print(f"{step:4d} | {step_reward / PROMPTS:11.3f} | {step_loss / max(n, 1):8.4f} | {synced}", flush=True)
 
-    print("GATE-A FULL on-policy loop complete (per-step NCCL weight-sync to served thinker)")
+    print("Thinker on-policy loop complete (per-step NCCL weight-sync to served thinker)")
 
 
 if __name__ == "__main__":

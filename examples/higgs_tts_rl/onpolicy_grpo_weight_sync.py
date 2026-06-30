@@ -1,8 +1,8 @@
-"""Full GATE-B closed loop: GRPO LoRA RL on the Higgs TTS actor with per-step NCCL
+"""Full on-policy Higgs TTS RL: GRPO LoRA on the Higgs TTS actor with per-step NCCL
 weight-sync to the served sglang-omni ``tts_engine`` stage, so each step's rollouts
 are on-policy.
 
-The fourth closed-loop component for TTS, mirroring gate_a_full.py:
+The fourth closed-loop component for TTS, mirroring the thinker onpolicy_grpo_weight_sync.py:
   rollout (/generate -> codec tokens + codebook-0 logprobs + audio)
   -> composite reward (Whisper ASR CER + audio-validity guards)
   -> GRPO advantage over codebook-0 tokens
@@ -15,10 +15,10 @@ Run (container, miles venv, free GPU for the trainer; Higgs server on another GP
     ASR_MODEL=openai/whisper-base ASR_DEVICE=cuda:0 CUDA_VISIBLE_DEVICES=4 \
     HF_HUB_OFFLINE=1 NCCL_P2P_DISABLE=1 NCCL_CUMEM_ENABLE=0 NCCL_NVLS_ENABLE=0 \
     PYTHONPATH=/root/rl-omni/sglang-omni:/root/rl-omni/miles \
-    python examples/omni_gate_b/gate_b_full.py
+    python examples/higgs_tts_rl/onpolicy_grpo_weight_sync.py
 
 CRITICAL: set NCCL_P2P_DISABLE=1 on BOTH the server and the trainer (single-GPU masks
-per process), exactly as in gate_a_full.py.
+per process), exactly as in the thinker on-policy script.
 """
 
 from __future__ import annotations
@@ -34,12 +34,12 @@ from peft import LoraConfig, get_peft_model
 
 SERVER = os.environ.get("SERVER", "http://localhost:8010")
 HIGGS_CKPT = os.environ["HIGGS_CKPT"]
-DATA = os.environ.get("DATA", "examples/omni_gate_b/tts_smoke.jsonl")
+DATA = os.environ.get("DATA", "examples/higgs_tts_rl/tts_smoke.jsonl")
 STEPS = int(os.environ.get("STEPS", "3"))
 GROUP = int(os.environ.get("GROUP", "4"))
 PROMPTS = int(os.environ.get("PROMPTS", "4"))
 MASTER_PORT = int(os.environ.get("MASTER_PORT", "29641"))
-GROUP_NAME = os.environ.get("GROUP_NAME", "gate_b_wsync")
+GROUP_NAME = os.environ.get("GROUP_NAME", "higgs_tts_wsync")
 TEMP = float(os.environ.get("TEMP", "0.8"))
 MAX_NEW = int(os.environ.get("MAX_NEW", "256"))
 EPS = 0.2
@@ -213,7 +213,7 @@ def main() -> None:
             flush=True,
         )
 
-    print("GATE-B FULL on-policy loop complete (per-step NCCL weight-sync to served tts_engine)")
+    print("Higgs TTS on-policy loop complete (per-step NCCL weight-sync to served tts_engine)")
 
 
 if __name__ == "__main__":

@@ -1,4 +1,4 @@
-"""GATE-B closed loop demo: GRPO rollout -> composite reward -> advantage on real Higgs TTS.
+"""Higgs TTS RL: rollout -> composite reward -> advantage (no weight update) on real Higgs TTS.
 
 Demonstrates the first three closed-loop components on the real Higgs-audio model through
 the sglang-omni rollout backend:
@@ -7,14 +7,14 @@ the sglang-omni rollout backend:
   -> GRPO advantage.
 
 The 4th component (LoRA policy update + NCCL weight-sync to the served TTS actor) mirrors
-GATE-A's gate_a_full.py: the rollout returns codec-token logprobs (old) and the trainer
+the thinker on-policy script (onpolicy_grpo_weight_sync.py): the rollout returns codec-token logprobs (old) and the trainer
 recomputes new logprobs over the codec sequence; weight sync uses /update_weights_from_distributed
 with NCCL_P2P_DISABLE=1.
 
 Run (container, miles venv; Higgs server already serving on SERVER):
     THINKER=... SERVER=http://localhost:8010 HIGGS_CKPT=<snapshot> \
     ASR_MODEL=openai/whisper-base ASR_DEVICE=cuda:0 \
-    python examples/omni_gate_b/gate_b_loop.py
+    python examples/higgs_tts_rl/rollout_reward_advantage.py
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ import os
 import urllib.request
 
 SERVER = os.environ.get("SERVER", "http://localhost:8010")
-DATA = os.environ.get("DATA", "examples/omni_gate_b/tts_smoke.jsonl")
+DATA = os.environ.get("DATA", "examples/higgs_tts_rl/tts_smoke.jsonl")
 GROUP = int(os.environ.get("GROUP", "4"))
 STEPS = int(os.environ.get("STEPS", "3"))
 
@@ -97,7 +97,7 @@ def main() -> None:
         mean_cer = step_cer / n_cer if n_cer else float("nan")
         print(f"{step:4d} | {step_reward / len(per_prompt):11.3f} | {mean_cer:8.3f} | {per_prompt}", flush=True)
 
-    print("GATE-B rollout->composite-reward->advantage demonstrated on real Higgs TTS")
+    print("Higgs TTS rollout->composite-reward->advantage demonstrated")
 
 
 if __name__ == "__main__":

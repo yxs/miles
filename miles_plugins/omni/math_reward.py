@@ -1,4 +1,4 @@
-"""Text-only math-correctness reward for the GATE-A thinker RL smoke.
+"""Text-only math-correctness reward for thinker text RL.
 
 Loaded via ``--custom-rm-path miles_plugins.omni.math_reward.compute_math_reward``.
 Returns 1.0 when the model's decoded response contains the gold answer

@@ -1,4 +1,4 @@
-"""GATE-A closed-loop smoke: GRPO RL on the Qwen3-Omni Thinker (single GPU, LoRA).
+"""Thinker text RL smoke: GRPO LoRA on the Qwen3-Omni Thinker (single GPU).
 
 Demonstrates all four closed-loop components on the real model end to end:
   rollout (sglang-omni /generate)  ->  reward (math correctness)
@@ -11,9 +11,9 @@ is the documented next integration step), so this proves loop stability, not on-
 convergence.
 
 Run (inside the container, miles venv):
-    THINKER=/root/qwen3-omni-thinker DATA=examples/omni_gate_a/math_smoke.jsonl \
+    THINKER=/root/qwen3-omni-thinker DATA=examples/thinker_text_rl/math_smoke.jsonl \
     SERVER=http://localhost:8000/generate CUDA_VISIBLE_DEVICES=4 \
-    python examples/omni_gate_a/gate_a_lora_smoke.py
+    python examples/thinker_text_rl/lora_grpo_smoke.py
 """
 
 from __future__ import annotations
@@ -105,7 +105,7 @@ def main() -> None:
         avg_loss = step_loss / max(n, 1)
         print(f"{step:4d} | {mean_reward:11.3f} | {avg_loss:8.4f} | {per_prompt}")
 
-    print("GATE-A closed-loop smoke complete (rollout->reward->advantage->LoRA update over multiple steps)")
+    print("Thinker RL smoke complete (rollout->reward->advantage->LoRA update over multiple steps)")
 
 
 if __name__ == "__main__":

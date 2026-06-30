@@ -1,4 +1,4 @@
-"""Composite reward for TTS RL (GATE-B): ASR round-trip CER + audio-validity guards.
+"""Composite reward for Higgs TTS RL: ASR round-trip CER + audio-validity guards.
 
 The TTS actor generates speech for a target text. The reward transcribes the generated
 audio with an ASR model (Whisper) and scores content correctness via CER, combined with

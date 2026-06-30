@@ -8,7 +8,7 @@ This rebuilds the same policy from the checkpoint with a plain `transformers`
 Qwen3 backbone + the fused codec embedding/head, which IS differentiable.
 
 Correctness is gated by a logprob-parity check against the server (see
-`examples/omni_gate_b/gate_b_parity_probe.py`): right after load the trainer and
+`examples/higgs_tts_rl/logprob_parity_probe.py`): right after load the trainer and
 the server are the same policy, so recomputed log-probs must match.
 """
 

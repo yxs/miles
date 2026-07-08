@@ -32,11 +32,13 @@ class OmniGenerateFn:
 
         prompt_ids = compute_prompt_ids_from_sample(input.state, sample)
         # Partial-rollout resume: continue from already-generated tokens and shrink the
-        # remaining budget by what was already produced (mirrors single_turn.generate).
-        if len(sample.response) > 0:
+        # remaining budget by what was already produced. Audio-only rollouts can have
+        # empty decoded text, so response_length is the source of truth here.
+        generated_token_count = _generated_token_count(sample, prompt_ids)
+        if generated_token_count > 0:
             input_ids = sample.tokens
-            if sampling_params.get("max_new_tokens") is not None:
-                sampling_params["max_new_tokens"] -= len(sample.tokens) - len(prompt_ids)
+            total_budget = sampling_params.get("max_new_tokens", args.rollout_max_response_len)
+            sampling_params["max_new_tokens"] = total_budget - generated_token_count
         else:
             input_ids = prompt_ids
 
@@ -61,6 +63,13 @@ class OmniGenerateFn:
         sample.update_from_meta_info(args, output["meta_info"])
 
         return GenerateFnOutput(samples=sample)
+
+
+def _generated_token_count(sample: Sample, prompt_ids: list[int]) -> int:
+    """Return how many completion tokens have already been generated for resume."""
+    if sample.response_length > 0:
+        return sample.response_length
+    return max(0, len(sample.tokens) - len(prompt_ids))
 
 
 def _clamp_max_new_tokens(args, sampling_params: dict, prompt_len: int) -> Sample.Status | None:

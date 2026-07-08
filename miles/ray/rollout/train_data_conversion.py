@@ -158,6 +158,7 @@ def split_train_data_by_dp(args, data, dp_size):
             "teacher_log_probs",
             "opd_reverse_kl",
             "weight_versions",
+            "metadata",
         ]:
             if key not in data:
                 continue

@@ -43,6 +43,8 @@ def _canned_response():
         "meta_info": {
             "finish_reason": {"type": "stop"},
             "output_token_logprobs": [[-0.1, 10], [-0.2, 11]],
+            "output_codebook_tokens": [[10, 101], [11, 111]],
+            "omni_rollout": {"version": 1, "action_streams": []},
             "completion_tokens": 2,
             "weight_version": "7",
             "cached_tokens": 0,
@@ -95,6 +97,8 @@ def test_omni_generate_fn_emits_payload_and_applies_response(monkeypatch):
     # generated audio is reward-facing -> metadata, never multimodal_train_inputs
     assert result_sample.metadata["generated_audio"] == {"format": "wav", "data": "<b64>"}
     assert result_sample.multimodal_train_inputs is None
+    assert result_sample.train_metadata["output_codebook_tokens"] == [[10, 101], [11, 111]]
+    assert result_sample.train_metadata["omni_rollout"] == {"version": 1, "action_streams": []}
     assert result_sample.weight_versions == ["7"]
     assert result_sample.status == Sample.Status.COMPLETED
 
@@ -181,3 +185,42 @@ def test_omni_generate_fn_resume_keeps_loss_mask_aligned(monkeypatch):
     # new on-policy tokens are trainable; mask stays aligned with response_length
     assert s.loss_mask == [0, 0, 1, 1]
     assert len(s.loss_mask) == s.response_length
+
+
+def test_omni_generate_fn_audio_only_resume_uses_token_state(monkeypatch):
+    captured = {}
+
+    async def fake_post(url, payload, **kwargs):
+        captured["payload"] = payload
+        return {
+            "text": "",
+            "meta_info": {
+                "finish_reason": {"type": "stop"},
+                "output_token_logprobs": [[-0.5, 20]],
+                "completion_tokens": 1,
+                "cached_tokens": 0,
+                "prompt_tokens": 5,
+            },
+        }
+
+    monkeypatch.setattr(omni_mod, "post", fake_post)
+
+    fn = load_generate_function(_HOOK_PATH)
+    sample = Sample(prompt="hi")
+    sample.tokens = [1, 2, 3, 10, 11]
+    sample.response = ""  # Higgs/TTS can produce audio/code tokens without decoded text.
+    sample.response_length = 2
+    sample.rollout_log_probs = [-0.1, -0.2]
+    inp = GenerateFnInput(
+        state=_fake_state(),
+        sample=sample,
+        sampling_params={"max_new_tokens": 64},
+        evaluation=False,
+    )
+
+    out = asyncio.run(fn(inp))
+
+    assert captured["payload"]["input_ids"] == [1, 2, 3, 10, 11]
+    assert captured["payload"]["sampling_params"]["max_new_tokens"] == 62
+    assert out.samples.tokens == [1, 2, 3, 10, 11, 20]
+    assert out.samples.response_length == 3

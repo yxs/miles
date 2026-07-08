@@ -189,6 +189,23 @@ def test_apply_response_to_sample_stores_audio_in_metadata_not_train_inputs():
     assert sample.multimodal_train_inputs is None
 
 
+def test_apply_response_to_sample_stores_codebook_rollout_in_train_metadata():
+    sample = Sample(prompt="p", tokens=[])
+    result = parse_generate_response(
+        _response(
+            [[-0.1, 10], [-0.2, 11]],
+            completion_tokens=2,
+            output_codebook_tokens=[[10, 1], [11, 2]],
+            omni_rollout={"version": 1, "action_streams": []},
+        )
+    )
+
+    apply_response_to_sample(sample, [1, 2], result)
+
+    assert sample.train_metadata["output_codebook_tokens"] == [[10, 1], [11, 2]]
+    assert sample.train_metadata["omni_rollout"] == {"version": 1, "action_streams": []}
+
+
 def test_apply_response_to_sample_multi_turn_accumulates():
     sample = Sample(prompt="p", tokens=[])
     first = parse_generate_response(_response([[-0.1, 10]], completion_tokens=1))

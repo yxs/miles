@@ -25,11 +25,13 @@ import multiprocessing
 import socket
 import threading
 import time
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
-from miles.utils.http_utils import wait_for_server_ready
+import miles.utils.http_utils as http_utils
+from miles.utils.http_utils import init_http_client, wait_for_server_ready
 
 
 def _find_free_port() -> int:
@@ -194,3 +196,42 @@ class TestWaitForServerReadySimulatedDelays:
 
         # The fake clock should have advanced past the timeout
         assert fake_time[0] >= timeout
+
+
+class TestInitHttpClient:
+    def teardown_method(self):
+        if http_utils._http_client is not None:
+            import asyncio
+
+            asyncio.run(http_utils._http_client.aclose())
+        http_utils._http_client = None
+        http_utils._client_concurrency = 0
+        http_utils._distributed_post_enabled = False
+        http_utils._post_actors = []
+        http_utils._post_actor_idx = 0
+
+    def test_external_zero_gpu_still_initializes_local_client(self):
+        args = SimpleNamespace(
+            rollout_num_gpus=0,
+            rollout_num_gpus_per_engine=1,
+            sglang_server_concurrency=8,
+            use_distributed_post=False,
+        )
+
+        init_http_client(args)
+
+        assert http_utils._http_client is not None
+        assert http_utils._client_concurrency == 8
+
+    def test_local_rollout_concurrency_scales_by_engine_count(self):
+        args = SimpleNamespace(
+            rollout_num_gpus=8,
+            rollout_num_gpus_per_engine=2,
+            sglang_server_concurrency=3,
+            use_distributed_post=False,
+        )
+
+        init_http_client(args)
+
+        assert http_utils._http_client is not None
+        assert http_utils._client_concurrency == 12

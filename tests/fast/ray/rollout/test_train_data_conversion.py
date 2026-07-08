@@ -126,6 +126,19 @@ class TestConvertSamplesToTrainData:
         )
         assert out["round_number"][0] == 7
 
+    def test_optional_field_train_metadata_passed_through(self):
+        args = make_args(rewards_normalization=False)
+        s = make_sample()
+        s.train_metadata = {"output_codebook_tokens": [[10, 1]], "omni_rollout": {"version": 1}}
+        out = convert_samples_to_train_data(
+            args,
+            [s],
+            metadata={},
+            custom_convert_samples_to_train_data_func=None,
+            custom_reward_post_process_func=None,
+        )
+        assert out["metadata"] == [{"output_codebook_tokens": [[10, 1]], "omni_rollout": {"version": 1}}]
+
     def test_optional_field_raw_reward_overridden_from_metadata(self):
         args = make_args(rewards_normalization=False)
         s = make_sample(reward=1.0)
@@ -431,11 +444,16 @@ class TestSplitTrainDataByDp:
             "sample_indices": [0, 1],
             "rollout_log_probs": [[-0.1], [-0.2]],
             "round_number": [1, 2],
+            "metadata": [
+                {"output_codebook_tokens": [[10, 1]]},
+                {"output_codebook_tokens": [[20, 2]]},
+            ],
         }
         refs = split_train_data_by_dp(args, data, dp_size=2)
         parts = [ray.get(r.inner) for r in refs]
         assert "rollout_log_probs" in parts[0]
         assert "round_number" in parts[0]
+        assert parts[0]["metadata"] == [{"output_codebook_tokens": [[10, 1]]}]
 
     def test_shared_keys_not_split(self):
         """raw_reward, total_lengths, dynamic_global_batch_size are shared, not split."""

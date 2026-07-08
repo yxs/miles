@@ -224,4 +224,22 @@ def apply_response_to_sample(
         # GPU and concatenates; store it in metadata instead.
         sample.metadata["generated_audio"] = result.audio
 
+    _store_train_rollout_metadata(sample, result)
+
     return sample
+
+
+def _store_train_rollout_metadata(sample: Sample, result: OmniRolloutResult) -> None:
+    """Copy Higgs rollout artifacts into the train-side metadata bridge."""
+    if result.output_codebook_tokens is None and result.omni_rollout is None:
+        return
+
+    if sample.train_metadata is None:
+        sample.train_metadata = {}
+
+    if result.output_codebook_tokens is not None:
+        sample.train_metadata.setdefault("output_codebook_tokens", [])
+        sample.train_metadata["output_codebook_tokens"].extend(result.output_codebook_tokens)
+
+    if result.omni_rollout is not None:
+        sample.train_metadata["omni_rollout"] = result.omni_rollout

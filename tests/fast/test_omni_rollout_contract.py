@@ -61,9 +61,11 @@ def test_build_generate_payload_shape_and_metadata():
         {"temperature": 1.0, "skip_special_tokens": True},
         metadata={"index": 5},
         output_modalities=["audio"],
+        return_omni_rollout=True,
     )
     assert payload["input_ids"] == [1, 2, 3]
     assert payload["return_logprob"] is True
+    assert payload["return_omni_rollout"] is True
     assert payload["sampling_params"] == {"temperature": 1.0}  # forbidden key removed
     assert payload["metadata"] == {"index": 5}
     assert payload["output_modalities"] == ["audio"]
@@ -97,6 +99,31 @@ def test_parse_generate_response_captures_audio_and_text():
     result = parse_generate_response(resp)
     assert result.audio == {"format": "wav", "sample_rate": 24000, "data": "<b64>"}
     assert result.text == "hi"
+
+
+def test_parse_generate_response_captures_codebook_tokens_and_omni_rollout():
+    resp = _response(
+        [[-0.1, 10], [-0.2, 11]],
+        completion_tokens=2,
+        output_codebook_tokens=[[10, 1, 2], [11, 3, 4]],
+        omni_rollout={"version": 1, "action_streams": []},
+    )
+
+    result = parse_generate_response(resp)
+
+    assert result.output_codebook_tokens == [[10, 1, 2], [11, 3, 4]]
+    assert result.omni_rollout == {"version": 1, "action_streams": []}
+
+
+def test_parse_generate_response_codebook_length_mismatch_raises():
+    with pytest.raises(ValueError, match="output_codebook_tokens length"):
+        parse_generate_response(
+            _response(
+                [[-0.1, 10], [-0.2, 11]],
+                completion_tokens=2,
+                output_codebook_tokens=[[10, 1, 2]],
+            )
+        )
 
 
 def test_parse_generate_response_empty_completion_is_not_an_error():

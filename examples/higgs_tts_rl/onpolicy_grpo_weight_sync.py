@@ -32,6 +32,11 @@ import urllib.request
 import torch
 from peft import LoraConfig, get_peft_model
 
+from miles_plugins.omni.rollout_contract import (
+    build_generate_payload,
+    parse_generate_response,
+)
+
 SERVER = os.environ.get("SERVER", "http://localhost:8010")
 HIGGS_CKPT = os.environ["HIGGS_CKPT"]
 DATA = os.environ.get("DATA", "examples/higgs_tts_rl/tts_smoke.jsonl")
@@ -55,20 +60,23 @@ def post(path: str, body: dict, timeout: int = 300):
 def rollout(input_ids: list[int], seed: int) -> dict:
     resp = post(
         "/generate",
-        {
-            "input_ids": input_ids,
-            "sampling_params": {"temperature": TEMP, "top_p": 0.95, "max_new_tokens": MAX_NEW, "seed": seed},
-            "return_logprob": True,
-            "output_modalities": ["audio"],
-        },
+        build_generate_payload(
+            input_ids,
+            {
+                "temperature": TEMP,
+                "top_p": 0.95,
+                "max_new_tokens": MAX_NEW,
+                "seed": seed,
+            },
+            output_modalities=["audio"],
+        ),
         timeout=180,
     )
-    meta = resp["meta_info"]
-    otl = meta.get("output_token_logprobs") or []
+    result = parse_generate_response(resp)
     return {
-        "old": [lp for lp, _ in otl],
-        "codes": meta.get("output_codebook_tokens"),
-        "audio": (resp.get("audio") or {}).get("data"),
+        "old": result.response_log_probs,
+        "codes": result.output_codebook_tokens,
+        "audio": (result.audio or {}).get("data"),
     }
 
 

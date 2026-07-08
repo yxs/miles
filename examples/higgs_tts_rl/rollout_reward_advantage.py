@@ -24,6 +24,11 @@ import json
 import os
 import urllib.request
 
+from miles_plugins.omni.rollout_contract import (
+    build_generate_payload,
+    parse_generate_response,
+)
+
 SERVER = os.environ.get("SERVER", "http://localhost:8010")
 DATA = os.environ.get("DATA", "examples/higgs_tts_rl/tts_smoke.jsonl")
 GROUP = int(os.environ.get("GROUP", "4"))
@@ -42,24 +47,24 @@ def _higgs_adapter():
 
 
 def rollout(input_ids: list[int], seed: int) -> dict:
-    req = {
-        "input_ids": input_ids,
-        "sampling_params": {"temperature": 0.8, "top_p": 0.95, "max_new_tokens": 256, "seed": seed},
-        "return_logprob": True,
-        "output_modalities": ["audio"],
-    }
+    req = build_generate_payload(
+        input_ids,
+        {"temperature": 0.8, "top_p": 0.95, "max_new_tokens": 256, "seed": seed},
+        output_modalities=["audio"],
+    )
     r = urllib.request.urlopen(
-        urllib.request.Request(SERVER + "/generate", data=json.dumps(req).encode(),
-                               headers={"Content-Type": "application/json"}),
+        urllib.request.Request(
+            SERVER + "/generate",
+            data=json.dumps(req).encode(),
+            headers={"Content-Type": "application/json"},
+        ),
         timeout=180,
     )
-    resp = json.loads(r.read())
-    otl = resp["meta_info"].get("output_token_logprobs") or []
-    audio = resp.get("audio") or {}
+    result = parse_generate_response(json.loads(r.read()))
     return {
-        "codec_tokens": [t for _, t in otl],
-        "old_logprobs": [lp for lp, _ in otl],
-        "audio_b64": audio.get("data"),
+        "codec_tokens": result.response_tokens,
+        "old_logprobs": result.response_log_probs,
+        "audio_b64": (result.audio or {}).get("data"),
     }
 
 

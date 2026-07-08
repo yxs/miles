@@ -62,6 +62,7 @@ def build_generate_payload(
     metadata: dict[str, Any] | None = None,
     output_modalities: list[str] | None = None,
     return_logprob: bool = True,
+    return_omni_rollout: bool = False,
     audio_data: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build an omni ``/generate`` request body from pre-tokenized inputs.
@@ -75,6 +76,8 @@ def build_generate_payload(
         "sampling_params": clean_sampling_params(sampling_params),
         "return_logprob": return_logprob,
     }
+    if return_omni_rollout:
+        payload["return_omni_rollout"] = True
     if metadata:
         payload["metadata"] = metadata
     if output_modalities is not None:
@@ -97,6 +100,8 @@ class OmniRolloutResult:
     prompt_tokens: int = 0
     completion_tokens: int = 0
     audio: dict[str, Any] | None = None
+    output_codebook_tokens: list[list[int]] | None = None
+    omni_rollout: dict[str, Any] | None = None
 
 
 def parse_generate_response(response: dict[str, Any]) -> OmniRolloutResult:
@@ -130,6 +135,8 @@ def parse_generate_response(response: dict[str, Any]) -> OmniRolloutResult:
     if "finish_reason" not in meta:
         raise ValueError("omni /generate meta_info is missing 'finish_reason'")
 
+    output_codebook_tokens = _parse_output_codebook_tokens(meta, completion_tokens)
+
     return OmniRolloutResult(
         response_tokens=response_tokens,
         response_log_probs=response_log_probs,
@@ -138,9 +145,37 @@ def parse_generate_response(response: dict[str, Any]) -> OmniRolloutResult:
         weight_version=meta.get("weight_version"),
         cached_tokens=int(meta.get("cached_tokens") or 0),
         prompt_tokens=int(meta.get("prompt_tokens") or 0),
-        completion_tokens=int(completion_tokens if completion_tokens is not None else len(response_tokens)),
+        completion_tokens=int(
+            completion_tokens if completion_tokens is not None else len(response_tokens)
+        ),
         audio=response.get("audio"),
+        output_codebook_tokens=output_codebook_tokens,
+        omni_rollout=meta.get("omni_rollout"),
     )
+
+
+def _parse_output_codebook_tokens(
+    meta: dict[str, Any], completion_tokens: Any
+) -> list[list[int]] | None:
+    raw = meta.get("output_codebook_tokens")
+    if raw is None:
+        return None
+    if not isinstance(raw, list):
+        raise ValueError("output_codebook_tokens must be a list of codebook rows")
+    if completion_tokens is not None and len(raw) != completion_tokens:
+        raise ValueError(
+            f"output_codebook_tokens length ({len(raw)}) "
+            f"!= completion_tokens ({completion_tokens})"
+        )
+    parsed: list[list[int]] = []
+    for i, row in enumerate(raw):
+        if not isinstance(row, (list, tuple)) or not row:
+            raise ValueError(
+                f"output_codebook_tokens[{i}] is malformed: {row!r}; "
+                "expected a non-empty codebook row"
+            )
+        parsed.append([int(token) for token in row])
+    return parsed
 
 
 def apply_response_to_sample(

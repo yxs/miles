@@ -18,6 +18,11 @@ import json
 import os
 import urllib.request
 
+from miles_plugins.omni.rollout_contract import (
+    build_generate_payload,
+    parse_generate_response,
+)
+
 SERVER = os.environ.get("SERVER", "http://localhost:8010")
 # Gate on mean|Δ|: the residual is the served model's bf16 + sglang-kernel numeric
 # floor (an fp32 trainer gives the SAME ~0.05 residual), so per-token max|Δ| of ~0.2
@@ -27,23 +32,26 @@ TOL = float(os.environ.get("PARITY_TOL", "0.10"))
 
 
 def _rollout(prompt_ids: list[int], seed: int) -> dict:
-    req = {
-        "input_ids": prompt_ids,
-        "sampling_params": {"temperature": 0.8, "top_p": 0.95, "max_new_tokens": 256, "seed": seed},
-        "return_logprob": True,
-        "output_modalities": ["audio"],
-    }
-    resp = json.loads(urllib.request.urlopen(
-        urllib.request.Request(SERVER + "/generate", data=json.dumps(req).encode(),
-                               headers={"Content-Type": "application/json"}),
-        timeout=180,
-    ).read())
-    meta = resp["meta_info"]
-    otl = meta.get("output_token_logprobs") or []
+    req = build_generate_payload(
+        prompt_ids,
+        {"temperature": 0.8, "top_p": 0.95, "max_new_tokens": 256, "seed": seed},
+        output_modalities=["audio"],
+    )
+    resp = json.loads(
+        urllib.request.urlopen(
+            urllib.request.Request(
+                SERVER + "/generate",
+                data=json.dumps(req).encode(),
+                headers={"Content-Type": "application/json"},
+            ),
+            timeout=180,
+        ).read()
+    )
+    result = parse_generate_response(resp)
     return {
-        "old_logprobs": [float(lp) for lp, _ in otl],
-        "cb0_tokens": [int(t) for _, t in otl],
-        "codebook_tokens": meta.get("output_codebook_tokens"),
+        "old_logprobs": result.response_log_probs,
+        "cb0_tokens": result.response_tokens,
+        "codebook_tokens": result.output_codebook_tokens,
     }
 
 

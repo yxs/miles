@@ -93,7 +93,8 @@ ray start --head --node-ip-address 127.0.0.1 --num-gpus $NGPU --disable-usage-st
 # train.py connects to the running cluster via ray.init(address="auto"); no dashboard / job-submit needed
 export PYTHONPATH=${REPO}:/root/rl-omni/sglang-omni
 export HF_HUB_OFFLINE=1
-export NCCL_P2P_DISABLE=1
+# Keep NCCL's default transport selection. Set NCCL_P2P_DISABLE=1 only when a
+# diagnosed container/topology issue requires the shared-memory fallback.
 export CUDA_DEVICE_MAX_CONNECTIONS=1
 
 python3 train.py \

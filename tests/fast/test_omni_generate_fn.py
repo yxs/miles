@@ -10,7 +10,6 @@ import asyncio
 from types import SimpleNamespace
 
 import numpy as np
-import pytest
 
 import miles_plugins.omni.omni_generate_fn as omni_mod
 from miles.rollout.base_types import GenerateFnInput
@@ -86,6 +85,7 @@ def test_omni_generate_fn_emits_payload_and_applies_response(monkeypatch):
     assert captured["url"] == "http://127.0.0.1:8000/generate"
     assert payload["input_ids"] == [1, 2, 3]
     assert payload["return_logprob"] is True
+    assert payload["return_omni_rollout"] is True
     assert payload["sampling_params"] == {"temperature": 0.7, "seed": 9, "max_new_tokens": 64}
     assert payload["metadata"] == {"group_index": 2, "index": 5}
     assert "audio_data" not in payload  # no input audio on this sample

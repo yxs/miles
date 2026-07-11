@@ -1,24 +1,7 @@
-"""Full on-policy Higgs TTS RL: GRPO LoRA on the Higgs TTS actor with per-step NCCL
-weight-sync to the served sglang-omni ``tts_engine`` stage, so each step's rollouts
-are on-policy.
+"""On-policy Higgs TTS GRPO with per-step SGLang-Omni weight sync.
 
-The fourth closed-loop component for TTS, mirroring the thinker onpolicy_grpo_weight_sync.py:
-  rollout (/generate -> codec tokens + codebook-0 logprobs + audio)
-  -> composite reward (Whisper ASR CER + audio-validity guards)
-  -> GRPO advantage over codebook-0 tokens
-  -> LoRA policy update (trainer recomputes new logprobs via HiggsTtsActor)
-  -> NCCL broadcast of LoRA-merged backbone weights into the served tts_engine stage
-     (names in the checkpoint `body.*` convention; the server fuses q/k/v on load).
-
-Run (container, miles venv, free GPU for the trainer; Higgs server on another GPU):
-    SERVER=http://localhost:8010 HIGGS_CKPT='<snapshot glob>' MASTER_PORT=29641 \
-    ASR_MODEL=openai/whisper-base ASR_DEVICE=cuda:0 CUDA_VISIBLE_DEVICES=4 \
-    HF_HUB_OFFLINE=1 NCCL_P2P_DISABLE=1 NCCL_CUMEM_ENABLE=0 NCCL_NVLS_ENABLE=0 \
-    PYTHONPATH=/root/rl-omni/sglang-omni:/root/rl-omni/miles \
-    python examples/higgs_tts_rl/onpolicy_grpo_weight_sync.py
-
-CRITICAL: set NCCL_P2P_DISABLE=1 on BOTH the server and the trainer (single-GPU masks
-per process), exactly as in the thinker on-policy script.
+Set ``TRAIN_MODE=lora`` (default) for the low-memory smoke path or ``full`` to
+train and sync the complete backbone plus tied codebook embedding/head.
 """
 
 from __future__ import annotations
@@ -35,6 +18,7 @@ from peft import LoraConfig, get_peft_model
 from miles_plugins.omni.rollout_contract import (
     build_generate_payload,
     parse_generate_response,
+    parse_omni_action_stream,
 )
 
 SERVER = os.environ.get("SERVER", "http://localhost:8010")
@@ -47,6 +31,9 @@ MASTER_PORT = int(os.environ.get("MASTER_PORT", "29641"))
 GROUP_NAME = os.environ.get("GROUP_NAME", "higgs_tts_wsync")
 TEMP = float(os.environ.get("TEMP", "0.8"))
 MAX_NEW = int(os.environ.get("MAX_NEW", "256"))
+TOP_K = int(os.environ["TOP_K"]) if os.environ.get("TOP_K") else None
+TRAIN_MODE = os.environ.get("TRAIN_MODE", "lora").lower()
+LR = float(os.environ.get("LR", "2e-5" if TRAIN_MODE == "lora" else "1e-6"))
 EPS = 0.2
 
 
@@ -58,24 +45,32 @@ def post(path: str, body: dict, timeout: int = 300):
 
 
 def rollout(input_ids: list[int], seed: int) -> dict:
+    sampling_params = {
+        "temperature": TEMP,
+        "top_p": 0.95,
+        "max_new_tokens": MAX_NEW,
+        "seed": seed,
+    }
+    if TOP_K is not None:
+        sampling_params["top_k"] = TOP_K
     resp = post(
         "/generate",
         build_generate_payload(
             input_ids,
-            {
-                "temperature": TEMP,
-                "top_p": 0.95,
-                "max_new_tokens": MAX_NEW,
-                "seed": seed,
-            },
+            sampling_params,
             output_modalities=["audio"],
+            return_omni_rollout=True,
         ),
         timeout=180,
     )
     result = parse_generate_response(resp)
+    stream = parse_omni_action_stream(result.omni_rollout, "higgs_codes")
+    if result.output_codebook_tokens != stream.actions:
+        raise ValueError("Higgs output_codebook_tokens do not match omni_rollout actions")
     return {
-        "old": result.response_log_probs,
-        "codes": result.output_codebook_tokens,
+        "old": stream.logprobs,
+        "mask": stream.action_mask,
+        "codes": stream.actions,
         "audio": (result.audio or {}).get("data"),
     }
 
@@ -87,7 +82,7 @@ def main() -> None:
     from tokenizers import Tokenizer
     from transformers import PreTrainedTokenizerFast
 
-    from miles_plugins.omni.higgs_actor import HiggsTtsActor
+    from miles_plugins.omni.higgs_actor import HiggsTtsActor, clipped_grpo_loss
     from miles_plugins.omni.tts_reward import TtsCompositeReward
 
     ckpt = glob.glob(HIGGS_CKPT)[0] if "*" in HIGGS_CKPT else HIGGS_CKPT
@@ -96,12 +91,17 @@ def main() -> None:
     reward_fn = TtsCompositeReward()
 
     actor = HiggsTtsActor(ckpt, device="cuda:0")
-    actor.backbone = get_peft_model(
-        actor.backbone,
-        LoraConfig(r=8, lora_alpha=16, target_modules=["q_proj", "v_proj"], task_type=None),
-    )
-    actor.backbone.train()
-    opt = torch.optim.AdamW([p for p in actor.backbone.parameters() if p.requires_grad], lr=2e-5)
+    if TRAIN_MODE == "lora":
+        actor.fused_embed.requires_grad_(False)
+        actor.backbone = get_peft_model(
+            actor.backbone,
+            LoraConfig(r=8, lora_alpha=16, target_modules=["q_proj", "v_proj"], task_type=None),
+        )
+    elif TRAIN_MODE != "full":
+        raise ValueError(f"TRAIN_MODE must be 'lora' or 'full', got {TRAIN_MODE!r}")
+    actor.train()
+    trainable_params = [param for param in actor.parameters() if param.requires_grad]
+    opt = torch.optim.AdamW(trainable_params, lr=LR)
 
     try:
         from sglang.srt.utils import init_custom_process_group
@@ -140,6 +140,7 @@ def main() -> None:
         raise init_err[0]
     print("WEIGHT_UPDATE_GROUP_READY", flush=True)
 
+    @torch.no_grad()
     def merged_lora_weights() -> dict[str, torch.Tensor]:
         out: dict[str, torch.Tensor] = {}
         for name, mod in actor.backbone.named_modules():
@@ -153,8 +154,17 @@ def main() -> None:
                 out["body." + hf + ".weight"] = w.to(torch.bfloat16).contiguous()
         return out
 
+    @torch.no_grad()
+    def weights_to_sync() -> dict[str, torch.Tensor]:
+        if TRAIN_MODE == "lora":
+            return merged_lora_weights()
+        return {
+            name: tensor.detach().to(torch.bfloat16).contiguous()
+            for name, tensor in actor.full_server_weights().items()
+        }
+
     def sync_to_server() -> int:
-        wd = merged_lora_weights()
+        wd = weights_to_sync()
         names = sorted(wd)
         spec = {
             "names": names,
@@ -197,21 +207,19 @@ def main() -> None:
                 if c.cer is not None:
                     step_cer += c.cer
                     n_cer += 1
-            for s, adv in zip(samples, [r - mean_r for r in rewards]):
+            for s, adv in zip(samples, [r - mean_r for r in rewards], strict=True):
                 codes = s["codes"]
                 if not codes or adv == 0.0:
                     continue
-                new = actor.codebook0_logprobs(pid, codes)
-                T = min(len(new), len(s["old"]))
-                new = new[:T]
-                old = torch.tensor(s["old"][:T], device="cuda:0")
-                ratio = torch.exp(new - old)
-                loss = -torch.min(ratio * adv, torch.clamp(ratio, 1 - EPS, 1 + EPS) * adv).mean()
+                new = actor.codebook_logprobs(pid, codes, temperature=TEMP, top_k=TOP_K)
+                old = torch.tensor(s["old"], dtype=new.dtype, device="cuda:0")
+                mask = torch.tensor(s["mask"], dtype=torch.bool, device="cuda:0")
+                loss = clipped_grpo_loss(new, old, mask, advantage=adv, clip_eps=EPS)
                 loss = loss / (GROUP * PROMPTS)
                 loss.backward()
                 step_loss += loss.item() * (GROUP * PROMPTS)
                 n += 1
-        torch.nn.utils.clip_grad_norm_([p for p in actor.backbone.parameters() if p.requires_grad], 1.0)
+        torch.nn.utils.clip_grad_norm_(trainable_params, 1.0)
         opt.step()
         synced = sync_to_server()  # next step's rollouts are on-policy
         mean_cer = step_cer / n_cer if n_cer else float("nan")

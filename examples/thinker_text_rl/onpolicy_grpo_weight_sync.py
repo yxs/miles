@@ -1,25 +1,8 @@
-"""Full on-policy Thinker text RL: GRPO LoRA on the Qwen3-Omni Thinker with per-step NCCL
-weight-sync to the served sglang-omni thinker, so each step's rollouts are on-policy.
+"""On-policy Qwen3-Omni Thinker GRPO with per-step SGLang-Omni weight sync.
 
-Beyond lora_grpo_smoke.py this adds the 4th closed-loop component done *properly*:
-after each optimizer step the LoRA-merged thinker weights are broadcast into the served
-thinker stage via sglang-omni's distributed weight-update admin plane
-(``/init_weights_update_group`` + ``/update_weights_from_distributed`` + ``stages=[thinker]``),
-the exact pattern from sglang-omni's E2E refit test. The thinker stage's ``load_weights``
-accepts plain ``model.*`` names, so the extracted-thinker names sync directly.
-
-Run (container, miles venv, free GPU for the trainer; server already on another GPU):
-    THINKER=/root/qwen3-omni-thinker DATA=examples/thinker_text_rl/math_smoke.jsonl \
-    SERVER=http://localhost:8003 MASTER_PORT=29631 CUDA_VISIBLE_DEVICES=4 \
-    NCCL_P2P_DISABLE=1 NCCL_CUMEM_ENABLE=0 NCCL_NVLS_ENABLE=0 \
-    python examples/thinker_text_rl/onpolicy_grpo_weight_sync.py
-
-CRITICAL: the trainer and the sglang-omni server run as separate processes, each with a
-single GPU exposed via CUDA_VISIBLE_DEVICES (both see it as cuda:0). NCCL would try direct
-P2P between the two physical GPUs and fail with "Cuda invalid argument" because neither
-process can resolve the peer's masked device. Set NCCL_P2P_DISABLE=1 on BOTH the server
-and the trainer so NCCL falls back to shared-memory transport. Verified: 4-step on-policy
-run, synced_params=160/step, stable loss/reward.
+NCCL supports the usual one-process-per-GPU setup even when each process names its
+local device ``cuda:0``. Use ``NCCL_P2P_DISABLE=1`` only as a topology-specific
+diagnostic workaround, not as a requirement of this layout.
 """
 
 from __future__ import annotations
@@ -166,7 +149,7 @@ def main() -> None:
             rewards = [1.0 if ex["label"] in s["text"] else 0.0 for s in samples]
             mean_r = sum(rewards) / len(rewards)
             step_reward += mean_r
-            for s, adv in zip(samples, [r - mean_r for r in rewards]):
+            for s, adv in zip(samples, [r - mean_r for r in rewards], strict=True):
                 if not s["tokens"] or adv == 0.0:
                     continue
                 full = torch.tensor([pid + s["tokens"]], device="cuda:0")

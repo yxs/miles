@@ -15,6 +15,7 @@ convention.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -104,6 +105,71 @@ class OmniRolloutResult:
     omni_rollout: dict[str, Any] | None = None
 
 
+@dataclass(frozen=True)
+class OmniActionStream:
+    """Validated two-dimensional discrete action stream from ``omni_rollout``."""
+
+    name: str
+    actions: list[list[int]]
+    logprobs: list[list[float]]
+    action_mask: list[list[bool]]
+
+
+def parse_omni_action_stream(omni_rollout: dict[str, Any] | None, stream_name: str) -> OmniActionStream:
+    """Return one validated ``codebook_2d`` action stream by name."""
+    if not isinstance(omni_rollout, dict):
+        raise ValueError("omni_rollout is required for structured action training")
+    streams = omni_rollout.get("action_streams")
+    if not isinstance(streams, list):
+        raise ValueError("omni_rollout.action_streams must be a list")
+
+    matches = [stream for stream in streams if stream.get("name") == stream_name]
+    if len(matches) != 1:
+        raise ValueError(f"expected exactly one omni action stream named {stream_name!r}, got {len(matches)}")
+    stream = matches[0]
+    if stream.get("action_type") != "discrete" or stream.get("layout") != "codebook_2d":
+        raise ValueError(f"omni action stream {stream_name!r} must be a discrete codebook_2d stream")
+
+    shape = stream.get("shape")
+    if not isinstance(shape, list) or len(shape) != 2 or not all(isinstance(dim, int) and dim >= 0 for dim in shape):
+        raise ValueError(f"omni action stream {stream_name!r} has invalid shape {shape!r}")
+    rows, channels = shape
+
+    actions = _parse_2d_stream_field(stream, "actions", rows, channels, int)
+    logprobs = _parse_2d_stream_field(stream, "logprobs", rows, channels, float)
+    action_mask = _parse_2d_stream_field(stream, "action_mask", rows, channels, bool)
+    for row_idx, (logprob_row, mask_row) in enumerate(zip(logprobs, action_mask, strict=True)):
+        for channel_idx, (logprob, trainable) in enumerate(zip(logprob_row, mask_row, strict=True)):
+            if trainable and not math.isfinite(logprob):
+                raise ValueError(f"non-finite logprob at {stream_name}[{row_idx}][{channel_idx}]")
+
+    return OmniActionStream(
+        name=stream_name,
+        actions=actions,
+        logprobs=logprobs,
+        action_mask=action_mask,
+    )
+
+
+def _parse_2d_stream_field(stream: dict[str, Any], field_name: str, rows: int, channels: int, cast) -> list[list[Any]]:
+    value = stream.get(field_name)
+    if not isinstance(value, list) or len(value) != rows:
+        raise ValueError(
+            f"omni action stream {stream['name']!r} field {field_name!r} "
+            f"does not match declared shape {[rows, channels]}"
+        )
+
+    parsed: list[list[Any]] = []
+    for row in value:
+        if not isinstance(row, list) or len(row) != channels:
+            raise ValueError(
+                f"omni action stream {stream['name']!r} field {field_name!r} "
+                f"does not match declared shape {[rows, channels]}"
+            )
+        parsed.append([cast(item) for item in row])
+    return parsed
+
+
 def parse_generate_response(response: dict[str, Any]) -> OmniRolloutResult:
     """Parse an omni ``/generate`` response into :class:`OmniRolloutResult`.
 
@@ -119,17 +185,14 @@ def parse_generate_response(response: dict[str, Any]) -> OmniRolloutResult:
     response_log_probs: list[float] = []
     for i, item in enumerate(token_logprobs):
         if not isinstance(item, (list, tuple)) or len(item) != 2:
-            raise ValueError(
-                f"output_token_logprobs[{i}] is malformed: {item!r}; expected [log_prob, token_id]"
-            )
+            raise ValueError(f"output_token_logprobs[{i}] is malformed: {item!r}; expected [log_prob, token_id]")
         response_log_probs.append(float(item[0]))
         response_tokens.append(int(item[1]))
 
     completion_tokens = meta.get("completion_tokens")
     if completion_tokens is not None and len(response_tokens) != completion_tokens:
         raise ValueError(
-            f"output_token_logprobs length ({len(response_tokens)}) "
-            f"!= completion_tokens ({completion_tokens})"
+            f"output_token_logprobs length ({len(response_tokens)}) " f"!= completion_tokens ({completion_tokens})"
         )
 
     if "finish_reason" not in meta:
@@ -145,34 +208,26 @@ def parse_generate_response(response: dict[str, Any]) -> OmniRolloutResult:
         weight_version=meta.get("weight_version"),
         cached_tokens=int(meta.get("cached_tokens") or 0),
         prompt_tokens=int(meta.get("prompt_tokens") or 0),
-        completion_tokens=int(
-            completion_tokens if completion_tokens is not None else len(response_tokens)
-        ),
+        completion_tokens=int(completion_tokens if completion_tokens is not None else len(response_tokens)),
         audio=response.get("audio"),
         output_codebook_tokens=output_codebook_tokens,
         omni_rollout=meta.get("omni_rollout"),
     )
 
 
-def _parse_output_codebook_tokens(
-    meta: dict[str, Any], completion_tokens: Any
-) -> list[list[int]] | None:
+def _parse_output_codebook_tokens(meta: dict[str, Any], completion_tokens: Any) -> list[list[int]] | None:
     raw = meta.get("output_codebook_tokens")
     if raw is None:
         return None
     if not isinstance(raw, list):
         raise ValueError("output_codebook_tokens must be a list of codebook rows")
     if completion_tokens is not None and len(raw) != completion_tokens:
-        raise ValueError(
-            f"output_codebook_tokens length ({len(raw)}) "
-            f"!= completion_tokens ({completion_tokens})"
-        )
+        raise ValueError(f"output_codebook_tokens length ({len(raw)}) " f"!= completion_tokens ({completion_tokens})")
     parsed: list[list[int]] = []
     for i, row in enumerate(raw):
         if not isinstance(row, (list, tuple)) or not row:
             raise ValueError(
-                f"output_codebook_tokens[{i}] is malformed: {row!r}; "
-                "expected a non-empty codebook row"
+                f"output_codebook_tokens[{i}] is malformed: {row!r}; " "expected a non-empty codebook row"
             )
         parsed.append([int(token) for token in row])
     return parsed

@@ -20,6 +20,7 @@ from miles_plugins.omni.rollout_contract import (
     build_generate_payload,
     clean_sampling_params,
     parse_generate_response,
+    parse_omni_action_stream,
 )
 
 
@@ -115,6 +116,51 @@ def test_parse_generate_response_captures_codebook_tokens_and_omni_rollout():
     assert result.omni_rollout == {"version": 1, "action_streams": []}
 
 
+def test_parse_omni_action_stream_returns_full_codebook_lattice():
+    trace = {
+        "version": 1,
+        "total_action_count": 4,
+        "action_streams": [
+            {
+                "name": "higgs_codes",
+                "action_type": "discrete",
+                "layout": "codebook_2d",
+                "shape": [3, 2],
+                "actions": [[10, 1024], [11, 20], [1025, 21]],
+                "logprobs": [[-0.1, -9.0], [-0.2, -0.3], [-9.0, -0.4]],
+                "action_mask": [[1, 0], [1, 1], [0, 1]],
+            }
+        ],
+    }
+
+    stream = parse_omni_action_stream(trace, "higgs_codes")
+
+    assert stream.actions == [[10, 1024], [11, 20], [1025, 21]]
+    assert stream.logprobs == [[-0.1, -9.0], [-0.2, -0.3], [-9.0, -0.4]]
+    assert stream.action_mask == [[True, False], [True, True], [False, True]]
+
+
+def test_parse_omni_action_stream_rejects_shape_mismatch():
+    trace = {
+        "version": 1,
+        "total_action_count": 2,
+        "action_streams": [
+            {
+                "name": "higgs_codes",
+                "action_type": "discrete",
+                "layout": "codebook_2d",
+                "shape": [2, 2],
+                "actions": [[10, 20]],
+                "logprobs": [[-0.1, -0.2]],
+                "action_mask": [[1, 1]],
+            }
+        ],
+    }
+
+    with pytest.raises(ValueError, match="shape"):
+        parse_omni_action_stream(trace, "higgs_codes")
+
+
 def test_parse_generate_response_codebook_length_mismatch_raises():
     with pytest.raises(ValueError, match="output_codebook_tokens length"):
         parse_generate_response(
@@ -164,9 +210,7 @@ def test_parse_generate_response_missing_finish_reason_raises():
 def test_apply_response_to_sample_aligns_and_validates():
     sample = Sample(prompt="p", tokens=[])
     prompt_ids = [1, 2, 3]
-    result = parse_generate_response(
-        _response([[-0.1, 10], [-0.2, 11]], completion_tokens=2, weight_version="3")
-    )
+    result = parse_generate_response(_response([[-0.1, 10], [-0.2, 11]], completion_tokens=2, weight_version="3"))
     apply_response_to_sample(sample, prompt_ids, result, update_loss_mask=True)
 
     assert sample.tokens == [1, 2, 3, 10, 11]

@@ -1,6 +1,4 @@
-"""Trainer-side Higgs TTS actor: a gradient-enabled teacher-forced forward that
-reproduces the served model's per-step codebook-0 log-probs over a sampled codec
-sequence, so the RL trainer can recompute new-policy log-probs for GRPO.
+"""Trainer-side Higgs TTS actor with gradient-enabled codebook logprob replay.
 
 The served `HiggsTTSModel` backbone is sglang's inference `Qwen3ForCausalLM`
 (paged attention / CUDA graph, no autograd), so it cannot be trained directly.
@@ -30,6 +28,73 @@ _BACKBONE_RENAME = {
     "body.norm.": "norm.",
 }
 _FUSED_EMBED_KEY = "tied.embedding.modality_embeddings.0.embedding.weight"
+_GREEDY_TEMP_THRESHOLD = 1e-5
+
+
+def backbone_parameter_to_checkpoint_name(name: str) -> str:
+    """Map a plain ``Qwen3Model`` parameter name back to the Higgs checkpoint."""
+    if name.startswith("embed_tokens."):
+        return "tied.embedding.text_embedding." + name[len("embed_tokens.") :]
+    if name.startswith("layers."):
+        return "body.layers." + name[len("layers.") :]
+    if name.startswith("norm."):
+        return "body.norm." + name[len("norm.") :]
+    raise ValueError(f"unsupported Higgs actor backbone parameter {name!r}")
+
+
+def build_full_server_weights(backbone, fused_embed: torch.Tensor) -> dict[str, torch.Tensor]:
+    """Return full-parameter actor weights using names accepted by the server."""
+    weights = {backbone_parameter_to_checkpoint_name(name): param for name, param in backbone.named_parameters()}
+    weights[_FUSED_EMBED_KEY] = fused_embed
+    return weights
+
+
+def selected_codebook_logprobs(
+    step_hidden: torch.Tensor,
+    fused_embed: torch.Tensor,
+    codes: torch.Tensor,
+    *,
+    num_codebooks: int,
+    codebook_vocab: int,
+    temperature: float,
+    top_k: int | None = None,
+) -> torch.Tensor:
+    """Compute selected-action logprobs for every cell in a codebook lattice."""
+    if codes.ndim != 2 or tuple(codes.shape) != (step_hidden.shape[0], num_codebooks):
+        raise ValueError(f"codes shape {tuple(codes.shape)} must be {(step_hidden.shape[0], num_codebooks)}")
+    expected_rows = num_codebooks * codebook_vocab
+    if fused_embed.ndim != 2 or fused_embed.shape[0] != expected_rows:
+        raise ValueError(f"fused_embed shape {tuple(fused_embed.shape)} must start with {expected_rows} rows")
+
+    logits = F.linear(step_hidden.float(), fused_embed.float()).view(
+        step_hidden.shape[0], num_codebooks, codebook_vocab
+    )
+    greedy = temperature <= _GREEDY_TEMP_THRESHOLD or top_k == 1
+    effective_temperature = 1.0 if greedy else max(float(temperature), _GREEDY_TEMP_THRESHOLD)
+    logprobs = torch.log_softmax(logits / effective_temperature, dim=-1)
+    return logprobs.gather(-1, codes.long().unsqueeze(-1)).squeeze(-1)
+
+
+def clipped_grpo_loss(
+    current_logprobs: torch.Tensor,
+    old_logprobs: torch.Tensor,
+    action_mask: torch.Tensor,
+    *,
+    advantage: float | torch.Tensor,
+    clip_eps: float,
+) -> torch.Tensor:
+    """Per-action clipped GRPO loss over the trainable codebook cells."""
+    if current_logprobs.shape != old_logprobs.shape or current_logprobs.shape != action_mask.shape:
+        raise ValueError("current logprobs, old logprobs, and action mask must have the same shape")
+    action_mask = action_mask.to(device=current_logprobs.device, dtype=torch.bool)
+    if not bool(action_mask.any()):
+        raise ValueError("GRPO action mask contains no trainable actions")
+
+    ratio = torch.exp(current_logprobs - old_logprobs)
+    advantage_t = torch.as_tensor(advantage, dtype=ratio.dtype, device=ratio.device)
+    unclipped = ratio * advantage_t
+    clipped = torch.clamp(ratio, 1 - clip_eps, 1 + clip_eps) * advantage_t
+    return -torch.minimum(unclipped, clipped)[action_mask].mean()
 
 
 def _resolve_ckpt_dir(path_or_glob: str) -> str:
@@ -41,10 +106,11 @@ def _resolve_ckpt_dir(path_or_glob: str) -> str:
     return path_or_glob
 
 
-class HiggsTtsActor:
+class HiggsTtsActor(torch.nn.Module):
     """Differentiable Higgs codec policy (Qwen3 backbone + fused codebook head)."""
 
     def __init__(self, ckpt_dir: str, device: str = "cuda:0", dtype=torch.bfloat16):
+        super().__init__()
         from safetensors import safe_open
         from transformers import Qwen3Config, Qwen3Model
 
@@ -87,12 +153,10 @@ class HiggsTtsActor:
         if real_missing:
             raise RuntimeError(f"missing backbone keys: {real_missing[:5]}")
 
-        # Fused codebook weight [N*V, D]: input embedding (sum over codebooks) and,
-        # tied, the codebook-0 head = its first V rows.
-        self.fused_embed = fused_embed.to(device=device, dtype=dtype)
-        self._cb_offsets = (
-            torch.arange(self.num_codebooks, device=device) * self.codebook_vocab
-        )
+        # Fused codebook weight [N*V, D], tied between the summed input embedding
+        # and all per-codebook output heads.
+        self.fused_embed = torch.nn.Parameter(fused_embed.to(device=device, dtype=dtype))
+        self._cb_offsets = torch.arange(self.num_codebooks, device=device) * self.codebook_vocab
 
     def _rename_backbone(self, key: str) -> str | None:
         if key.startswith("tied.embedding.modality_embeddings.0.model."):
@@ -107,15 +171,15 @@ class HiggsTtsActor:
         fused_ids = codes_LN + self._cb_offsets
         return F.embedding(fused_ids, self.fused_embed).sum(dim=-2)
 
-    def codebook0_logprobs(
-        self, prompt_ids: list[int], codebook_tokens: list[list[int]]
+    def codebook_logprobs(
+        self,
+        prompt_ids: list[int],
+        codebook_tokens: list[list[int]],
+        *,
+        temperature: float,
+        top_k: int | None = None,
     ) -> torch.Tensor:
-        """Teacher-forced new-policy log-probs of each step's sampled codebook-0 token.
-
-        ``codebook_tokens`` is ``[T, num_codebooks]`` (the full per-step codes the
-        server fed back). Returns ``[T]`` log-probs aligned with the rollout's
-        ``output_token_logprobs`` (codebook-0).
-        """
+        """Teacher-forced selected-action logprobs for all sampled codebooks."""
         device = self.device
         prompt = torch.tensor(prompt_ids, dtype=torch.long, device=device)
         codes = torch.tensor(codebook_tokens, dtype=torch.long, device=device)  # [T, N]
@@ -141,7 +205,20 @@ class HiggsTtsActor:
         )
         hidden = out.last_hidden_state[0]  # [L, D]
         step_hidden = hidden[P - 1 : P - 1 + T]  # [T, D]
-        cb0_logits = F.linear(step_hidden.float(), self.fused_embed[: self.codebook_vocab].float())
-        logp = torch.log_softmax(cb0_logits, dim=-1)  # [T, V]
-        sampled_cb0 = codes[:, 0]  # [T]
-        return logp[torch.arange(T, device=device), sampled_cb0]
+        return selected_codebook_logprobs(
+            step_hidden,
+            self.fused_embed,
+            codes,
+            num_codebooks=self.num_codebooks,
+            codebook_vocab=self.codebook_vocab,
+            temperature=temperature,
+            top_k=top_k,
+        )
+
+    def codebook0_logprobs(self, prompt_ids: list[int], codebook_tokens: list[list[int]]) -> torch.Tensor:
+        """Raw codebook-0 logprobs retained for server parity diagnostics."""
+        return self.codebook_logprobs(prompt_ids, codebook_tokens, temperature=1.0)[:, 0]
+
+    def full_server_weights(self) -> dict[str, torch.Tensor]:
+        """Expose every full-training weight with a server-compatible name."""
+        return build_full_server_weights(self.backbone, self.fused_embed)

@@ -52,6 +52,7 @@ class OmniGenerateFn:
             sampling_params,
             metadata=_request_metadata(sample),
             output_modalities=sample.metadata.get("output_modalities"),
+            return_omni_rollout=True,
             audio_data=_encode_input_audio(sample),
         )
 

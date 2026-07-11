@@ -10,6 +10,8 @@ import asyncio
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
+from PIL import Image
 
 import miles_plugins.omni.omni_generate_fn as omni_mod
 from miles.rollout.base_types import GenerateFnInput
@@ -88,7 +90,8 @@ def test_omni_generate_fn_emits_payload_and_applies_response(monkeypatch):
     assert payload["return_omni_rollout"] is True
     assert payload["sampling_params"] == {"temperature": 0.7, "seed": 9, "max_new_tokens": 64}
     assert payload["metadata"] == {"group_index": 2, "index": 5}
-    assert "audio_data" not in payload  # no input audio on this sample
+    assert "audios" not in payload  # no input audio on this sample
+    assert "images" not in payload  # no input image on this sample
 
     assert result_sample.tokens == [1, 2, 3, 10, 11]
     assert result_sample.response_length == 2
@@ -142,9 +145,54 @@ def test_omni_generate_fn_encodes_input_audio(monkeypatch):
     )
 
     asyncio.run(fn(inp))
-    audio_data = captured["payload"]["audio_data"]
-    assert len(audio_data) == 1
-    assert audio_data[0].startswith("data:audio/wav;base64,")
+    audios = captured["payload"]["audios"]
+    assert len(audios) == 1
+    assert audios[0].startswith("data:audio/wav;base64,")
+
+
+def test_omni_generate_fn_reuses_standard_image_encoder(monkeypatch):
+    captured = {}
+
+    async def fake_post(url, payload, **kwargs):
+        captured["payload"] = payload
+        return _canned_response()
+
+    monkeypatch.setattr(omni_mod, "post", fake_post)
+
+    fn = load_generate_function(_HOOK_PATH)
+    sample = Sample(prompt="hi")
+    sample.multimodal_inputs = {"images": [Image.new("RGB", (2, 2), "red")]}
+    inp = GenerateFnInput(
+        state=_fake_state(),
+        sample=sample,
+        sampling_params={"max_new_tokens": 32},
+        evaluation=False,
+    )
+
+    asyncio.run(fn(inp))
+    images = captured["payload"]["images"]
+    assert len(images) == 1
+    assert images[0].startswith("data:image/png;base64,")
+
+
+def test_omni_generate_fn_rejects_unencoded_video(monkeypatch):
+    async def fail_post(url, payload, **kwargs):
+        raise AssertionError("invalid video must fail before HTTP transport")
+
+    monkeypatch.setattr(omni_mod, "post", fail_post)
+
+    fn = load_generate_function(_HOOK_PATH)
+    sample = Sample(prompt="hi")
+    sample.multimodal_inputs = {"videos": [np.zeros((2, 2, 3), dtype=np.uint8)]}
+    inp = GenerateFnInput(
+        state=_fake_state(),
+        sample=sample,
+        sampling_params={"max_new_tokens": 32},
+        evaluation=False,
+    )
+
+    with pytest.raises(ValueError, match="data:video URIs"):
+        asyncio.run(fn(inp))
 
 
 def test_omni_generate_fn_resume_keeps_loss_mask_aligned(monkeypatch):

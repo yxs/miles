@@ -64,7 +64,9 @@ def build_generate_payload(
     output_modalities: list[str] | None = None,
     return_logprob: bool = True,
     return_omni_rollout: bool = False,
-    audio_data: list[str] | None = None,
+    images: list[str] | None = None,
+    audios: list[str] | None = None,
+    videos: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build an omni ``/generate`` request body from pre-tokenized inputs.
 
@@ -83,8 +85,12 @@ def build_generate_payload(
         payload["metadata"] = metadata
     if output_modalities is not None:
         payload["output_modalities"] = output_modalities
-    if audio_data is not None:
-        payload["audio_data"] = audio_data
+    if images is not None:
+        payload["images"] = images
+    if audios is not None:
+        payload["audios"] = audios
+    if videos is not None:
+        payload["videos"] = videos
     return payload
 
 

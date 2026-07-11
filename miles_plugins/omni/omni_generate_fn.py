@@ -13,7 +13,11 @@ from __future__ import annotations
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 from miles.rollout.generate_utils.generate_endpoint_utils import compute_prompt_ids_from_sample
 from miles.utils.http_utils import post
-from miles.utils.processing_utils import encode_audios_for_rollout_engine, extract_audio_inputs
+from miles.utils.processing_utils import (
+    encode_audios_for_rollout_engine,
+    encode_image_for_rollout_engine,
+    extract_audio_inputs,
+)
 from miles.utils.types import Sample
 
 from .rollout_contract import apply_response_to_sample, build_generate_payload, parse_generate_response
@@ -53,7 +57,9 @@ class OmniGenerateFn:
             metadata=_request_metadata(sample),
             output_modalities=sample.metadata.get("output_modalities"),
             return_omni_rollout=True,
-            audio_data=_encode_input_audio(sample),
+            images=_encode_input_images(sample),
+            audios=_encode_input_audio(sample),
+            videos=_encoded_input_videos(sample),
         )
 
         output = await post(url, payload)
@@ -96,6 +102,28 @@ def _encode_input_audio(sample: Sample) -> list[str] | None:
     if not audios:
         return None
     return encode_audios_for_rollout_engine(audios)
+
+
+def _encode_input_images(sample: Sample) -> list[str] | None:
+    """Reuse Miles' standard VLM serializer for the omni request contract."""
+    images = (sample.multimodal_inputs or {}).get("images")
+    if not images:
+        return None
+    return [encode_image_for_rollout_engine(image) for image in images]
+
+
+def _encoded_input_videos(sample: Sample) -> list[str] | None:
+    """Forward already transport-safe video references and reject other shapes."""
+    videos = (sample.multimodal_inputs or {}).get("videos")
+    if not videos:
+        return None
+    if not all(
+        isinstance(video, str)
+        and (video.startswith("data:video/") or video.startswith("https://") or video.startswith("http://"))
+        for video in videos
+    ):
+        raise ValueError("Omni rollout video inputs must be data:video URIs or HTTP(S) URLs")
+    return list(videos)
 
 
 def _request_metadata(sample: Sample) -> dict:

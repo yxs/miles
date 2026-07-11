@@ -74,6 +74,23 @@ def test_build_generate_payload_shape_and_metadata():
     assert "metadata" not in build_generate_payload([1], {})
 
 
+def test_build_generate_payload_uses_canonical_media_names():
+    payload = build_generate_payload(
+        [1, 2, 3],
+        {},
+        images=["data:image/png;base64,SU1H"],
+        audios=["data:audio/wav;base64,QVVESU8="],
+        videos=["https://example.test/video.mp4"],
+    )
+
+    assert payload["images"] == ["data:image/png;base64,SU1H"]
+    assert payload["audios"] == ["data:audio/wav;base64,QVVESU8="]
+    assert payload["videos"] == ["https://example.test/video.mp4"]
+    assert "image_data" not in payload
+    assert "audio_data" not in payload
+    assert "video_data" not in payload
+
+
 # --- response parsing ------------------------------------------------------------------
 
 

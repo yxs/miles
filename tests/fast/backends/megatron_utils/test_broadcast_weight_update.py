@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 import torch
 
 from miles.backends.megatron_utils.update_weight.update_weight_from_distributed import broadcast
@@ -65,3 +66,40 @@ def test_disconnect_releases_custom_group_once(monkeypatch) -> None:
     assert len(calls) == 1
     assert calls[0][1] == "miles-pp_0"
     assert updater._model_update_groups is None
+
+
+def test_weight_update_transport_matches_trainer(monkeypatch) -> None:
+    monkeypatch.delenv("NCCL_CUMEM_ENABLE", raising=False)
+    monkeypatch.setattr(broadcast.torch.cuda.nccl, "version", lambda: (2, 28, 9))
+
+    broadcast._validate_distributed_weight_update_transports(
+        [
+            {
+                "protocol_version": 1,
+                "backend": "nccl",
+                "nccl_version": "2.28.9",
+                "nccl_cumem_enable": "default",
+            }
+        ]
+    )
+
+
+def test_weight_update_transport_rejects_cumem_mismatch(monkeypatch) -> None:
+    monkeypatch.setenv("NCCL_CUMEM_ENABLE", "0")
+    monkeypatch.setattr(broadcast.torch.cuda.nccl, "version", lambda: (2, 28, 9))
+
+    with pytest.raises(RuntimeError, match="transport mismatch"):
+        broadcast._validate_distributed_weight_update_transports(
+            [
+                {
+                    "protocol_version": 1,
+                    "backend": "nccl",
+                    "nccl_version": "2.28.9",
+                    "nccl_cumem_enable": "default",
+                }
+            ]
+        )
+
+
+def test_weight_update_transport_allows_legacy_engines() -> None:
+    broadcast._validate_distributed_weight_update_transports([None, None])

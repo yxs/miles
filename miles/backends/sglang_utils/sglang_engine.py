@@ -22,6 +22,30 @@ from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
 logger = logging.getLogger(__name__)
 
 
+def _extract_omni_distributed_weight_update_transport(model_info: dict) -> dict:
+    transports = []
+    for item in model_info.get("stages", []):
+        if not isinstance(item, dict) or not isinstance(item.get("data"), dict):
+            continue
+        data = item["data"]
+        if data.get("supports_distributed_weight_update"):
+            transport = data.get("distributed_weight_update")
+            if not isinstance(transport, dict):
+                raise RuntimeError(
+                    "external SGLang-Omni stage supports distributed weight "
+                    "updates but advertises no transport descriptor"
+                )
+            transports.append(transport)
+
+    if not transports:
+        raise RuntimeError("external SGLang-Omni has no distributed weight-update transport")
+    if any(transport != transports[0] for transport in transports[1:]):
+        raise RuntimeError(
+            f"external SGLang-Omni stages advertise inconsistent weight-update transports: {transports}"
+        )
+    return transports[0]
+
+
 def _validate_omni_server_info(model_info: dict, expect_server_args: dict) -> None:
     """Validate the smaller model identity surface exposed by SGLang-Omni."""
     if model_info.get("success") is not True:
@@ -222,7 +246,8 @@ class SGLangEngine(RayActor):
             if response.status_code == 404:
                 response = requests.get(f"http://{self.server_host}:{self.server_port}/model_info")
                 response.raise_for_status()
-                _validate_omni_server_info(response.json(), expect_server_args)
+                self._omni_model_info = response.json()
+                _validate_omni_server_info(self._omni_model_info, expect_server_args)
                 return None
             response.raise_for_status()
             return response.json()
@@ -490,6 +515,12 @@ class SGLangEngine(RayActor):
             if response.status_code == 200:
                 return response.json()["weight_version"]
         response.raise_for_status()
+
+    def get_distributed_weight_update_transport(self):
+        model_info = getattr(self, "_omni_model_info", None)
+        if model_info is None:
+            return None
+        return _extract_omni_distributed_weight_update_transport(model_info)
 
     def unload_lora_adapter(self, lora_name: str):
         """Unload LoRA adapter."""

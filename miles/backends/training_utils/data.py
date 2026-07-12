@@ -124,17 +124,24 @@ def get_higgs_batch(
     """Fetch and collate one structured Higgs microbatch."""
 
     validate_higgs_single_device_config(args, data_parallel_size=get_parallel_state().intra_dp.size)
-    raw_batch = data_iterator.get_next(["tokens", "action_traces", "advantages"])
+    keys = ["tokens", "action_traces", "advantages"]
+    if require_advantages:
+        keys.append("log_probs")
+    raw_batch = data_iterator.get_next(keys)
     if raw_batch["tokens"] is None or raw_batch["action_traces"] is None:
         raise ValueError("Higgs microbatches require prompt tokens and typed action traces")
     advantages = raw_batch["advantages"]
     if require_advantages and advantages is None:
         raise ValueError("Higgs training microbatches require GRPO advantages")
+    ppo_old_joint_logprobs = raw_batch.get("log_probs")
+    if require_advantages and ppo_old_joint_logprobs is None:
+        raise ValueError("Higgs training requires pre-update Megatron joint logprobs")
     device = raw_batch["tokens"][0].device
     batch = collate_higgs_policy_batch(
         raw_batch["tokens"],
         raw_batch["action_traces"],
         advantages=advantages,
+        ppo_old_joint_logprobs=ppo_old_joint_logprobs,
         device=device,
     )
     if batch.num_codebooks != args.higgs_num_codebooks:

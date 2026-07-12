@@ -260,6 +260,7 @@ def collate_higgs_policy_batch(
     action_traces: Sequence[Any],
     *,
     advantages: Sequence[Any] | None = None,
+    ppo_old_joint_logprobs: Sequence[Any] | None = None,
     pad_token_id: int = 0,
     device: torch.device | str | None = None,
 ) -> HiggsPolicyBatch:
@@ -269,13 +270,17 @@ def collate_higgs_policy_batch(
     ``[0, t)``.  Consequently row zero is predicted from the last prompt
     position and row ``t > 0`` from the position containing row ``t - 1``.
     Forced BOC/EOC cells remain in ``prior_codes`` even though they are masked
-    out of the policy loss.
+    out of the policy loss. Server per-cell logprobs remain in
+    ``old_cell_logprobs`` for diagnostics; when supplied, the pre-update
+    Megatron joint logprobs are the PPO old-policy baseline.
     """
 
     if len(prompts) == 0 or len(prompts) != len(action_traces):
         raise ValueError("prompts and action_traces must have the same nonzero batch size")
     if advantages is not None and len(advantages) != len(prompts):
         raise ValueError("advantages must have one value or row vector per sample")
+    if ppo_old_joint_logprobs is not None and len(ppo_old_joint_logprobs) != len(prompts):
+        raise ValueError("PPO old joint logprobs must have one row vector per sample")
     if type(pad_token_id) is not int or pad_token_id < 0:
         raise ValueError("pad_token_id must be a non-negative integer")
 
@@ -347,6 +352,17 @@ def collate_higgs_policy_batch(
 
     row_mask = action_mask.any(dim=-1)
     old_joint_logprobs = old_cell_logprobs.sum(dim=-1)
+    if ppo_old_joint_logprobs is not None:
+        old_joint_logprobs.zero_()
+        for batch_index, (values, action_length) in enumerate(
+            zip(ppo_old_joint_logprobs, action_lengths.tolist(), strict=True)
+        ):
+            values = torch.as_tensor(values, dtype=torch.float32, device=device)
+            if values.ndim != 1 or values.numel() != action_length:
+                raise ValueError("each PPO old joint logprob vector must match its action-row count")
+            if not bool(torch.isfinite(values).all()):
+                raise ValueError("PPO old joint logprobs must be finite")
+            old_joint_logprobs[batch_index, :action_length] = values
     return HiggsPolicyBatch(
         input_ids=input_ids,
         prior_codes=prior_codes,
@@ -504,7 +520,7 @@ def higgs_policy_loss_from_logits(
         eps_clip_high=eps_clip_high,
     )
     abs_diff = (joint_logprobs.detach() - batch.old_joint_logprobs).abs()
-    metrics["train_rollout_logprob_abs_diff"] = _sum_of_sample_row_means(abs_diff, row_mask).detach()
+    metrics["train_old_policy_logprob_abs_diff"] = _sum_of_sample_row_means(abs_diff, row_mask).detach()
     return loss, metrics, cell_logprobs
 
 

@@ -157,6 +157,48 @@ def test_collation_right_pads_variable_prompt_and_action_lengths():
     assert batch.row_mask.tolist() == [[True, False, False], [True, True, True]]
 
 
+def test_collation_uses_recomputed_joint_logprobs_as_ppo_baseline():
+    trace = _Trace(
+        [[0, 1], [1, 2]],
+        [[-1.0, -2.0], [-3.0, -4.0]],
+        [[True, True], [True, True]],
+        vocab_size=3,
+    )
+
+    batch = collate_higgs_policy_batch(
+        [[7, 8]],
+        [trace],
+        advantages=[1.0],
+        ppo_old_joint_logprobs=[torch.tensor([-2.75, -6.5])],
+    )
+
+    assert torch.allclose(batch.old_cell_logprobs.sum(-1), torch.tensor([[-3.0, -7.0]]))
+    assert torch.allclose(batch.old_joint_logprobs, torch.tensor([[-2.75, -6.5]]))
+
+
+@pytest.mark.parametrize(
+    "baseline",
+    [
+        [torch.tensor([-1.0])],
+        [torch.tensor([-1.0, float("nan")])],
+    ],
+)
+def test_collation_rejects_invalid_recomputed_ppo_baseline(baseline):
+    trace = _Trace(
+        [[0, 1], [1, 2]],
+        [[-1.0, -2.0], [-3.0, -4.0]],
+        [[True, True], [True, True]],
+        vocab_size=3,
+    )
+
+    with pytest.raises(ValueError, match="PPO old joint logprob"):
+        collate_higgs_policy_batch(
+            [[7, 8]],
+            [trace],
+            ppo_old_joint_logprobs=baseline,
+        )
+
+
 def test_teacher_embedding_uses_channel_offsets_and_sums_codebooks():
     text_embeddings = torch.tensor([[[100.0], [200.0]]])
     # Two codebooks, vocabulary three.  Row [1, 2] maps to weights 1 and 5.
@@ -251,6 +293,46 @@ def test_forward_logprob_collection_returns_joint_rows_per_sample():
     _, expected, _ = selected_higgs_logprobs(logits, batch.actions, batch.action_mask)
     assert len(result["log_probs"]) == 1
     assert torch.allclose(result["log_probs"][0], expected[0])
+
+
+def test_training_batch_requires_and_uses_preupdate_megatron_logprobs(monkeypatch):
+    from miles.backends.training_utils import data as data_module
+
+    trace = _Trace(
+        [[0, 1], [1, 2]],
+        [[-1.0, -2.0], [-3.0, -4.0]],
+        [[True, True], [True, True]],
+        vocab_size=3,
+    )
+    rollout_data = {
+        "tokens": [torch.tensor([7, 8])],
+        "action_traces": [trace],
+        "advantages": [torch.ones(2)],
+        "log_probs": [torch.tensor([-2.75, -6.5])],
+    }
+
+    class Iterator:
+        def get_next(self, keys):
+            return {key: rollout_data.get(key) for key in keys}
+
+    monkeypatch.setattr(
+        data_module,
+        "get_parallel_state",
+        lambda: SimpleNamespace(intra_dp=SimpleNamespace(size=1)),
+    )
+    args = _config(
+        higgs_num_codebooks=2,
+        higgs_codebook_vocab_size=3,
+        seq_length=16,
+    )
+
+    batch = data_module.get_higgs_batch(Iterator(), args, require_advantages=True)
+
+    assert torch.allclose(batch.old_joint_logprobs, torch.tensor([[-2.75, -6.5]]))
+
+    rollout_data["log_probs"] = None
+    with pytest.raises(ValueError, match="pre-update Megatron joint logprobs"):
+        data_module.get_higgs_batch(Iterator(), args, require_advantages=True)
 
 
 def test_structured_grpo_advantage_is_broadcast_to_action_rows(monkeypatch):

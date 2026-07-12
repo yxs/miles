@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Any
 
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
@@ -103,6 +104,41 @@ def build_zero_shot_higgs_prompt_ids(tokenizer: Any, prompt_text: str) -> list[i
 class OmniGenerateFn:
     """Miles custom generate function for a fresh Higgs audio trajectory."""
 
+    @staticmethod
+    def add_arguments(parser: Any) -> None:
+        group = parser.add_argument_group("Higgs TTS reward")
+        group.add_argument(
+            "--tts-asr-backend",
+            choices=("local", "sglang_omni"),
+            default=os.environ.get("MILES_TTS_ASR_BACKEND", "local"),
+        )
+        group.add_argument(
+            "--tts-asr-url",
+            default=os.environ.get("MILES_TTS_ASR_URL", "http://127.0.0.1:8080"),
+        )
+        group.add_argument(
+            "--tts-asr-model",
+            default=os.environ.get("MILES_TTS_ASR_MODEL"),
+        )
+        group.add_argument(
+            "--tts-asr-device",
+            default=os.environ.get("MILES_TTS_ASR_DEVICE", "cpu"),
+        )
+        group.add_argument(
+            "--tts-asr-language",
+            default=os.environ.get("MILES_TTS_ASR_LANGUAGE", "en"),
+        )
+        group.add_argument(
+            "--tts-asr-concurrency",
+            type=int,
+            default=int(os.environ.get("MILES_TTS_ASR_CONCURRENCY", "32")),
+        )
+        group.add_argument(
+            "--tts-asr-timeout",
+            type=float,
+            default=float(os.environ.get("MILES_TTS_ASR_TIMEOUT", "300")),
+        )
+
     async def __call__(self, input: GenerateFnInput) -> GenerateFnOutput:
         sample = input.sample
         _validate_fresh_sample(sample)
@@ -112,7 +148,7 @@ class OmniGenerateFn:
         _set_generation_budget(input.args, sampling_params, len(prompt_ids))
         payload = build_higgs_generate_payload(prompt_ids, sampling_params)
 
-        url = f"http://{input.args.sglang_router_ip}:{input.args.sglang_router_port}/generate"
+        url = _generate_url(input.args)
         response = await post(url, payload)
         result = parse_higgs_generate_response(
             response,
@@ -143,6 +179,16 @@ def _validate_fresh_sample(sample: Sample) -> None:
         raise ValueError("Higgs structured rollouts require a fresh sample")
     if sample.multimodal_inputs:
         raise ValueError("Higgs RL currently supports zero-shot text-to-audio only; reference media is not supported")
+
+
+def _generate_url(args: Any) -> str:
+    values = vars(args)
+    if values.get("rollout_external", False):
+        addresses = values.get("rollout_external_engine_addrs")
+        if not isinstance(addresses, list) or len(addresses) != 1 or not isinstance(addresses[0], str):
+            raise ValueError("the initial Higgs external rollout path requires exactly one engine address")
+        return f"http://{addresses[0].rstrip('/')}/generate"
+    return f"http://{args.sglang_router_ip}:{args.sglang_router_port}/generate"
 
 
 def _prompt_ids(input: GenerateFnInput) -> list[int]:

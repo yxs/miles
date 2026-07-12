@@ -137,6 +137,11 @@ class RayTrainGroup:
 
         await self._broadcast("update_weights", info=info)
 
+    async def disconnect_rollout_engines(self):
+        if self.args.train_backend != "megatron" or self.args.debug_train_only or self.args.debug_rollout_only:
+            return
+        await self._broadcast("disconnect_rollout_engines")
+
     async def onload(self):
         await self._broadcast("wake_up")
 

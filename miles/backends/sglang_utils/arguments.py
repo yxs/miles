@@ -135,7 +135,13 @@ def add_sglang_arguments(parser):
 
 
 def validate_args(args):
+    values = vars(args)
+    # SGLang's CLI uses long-form parallelism destinations in newer releases,
+    # while ServerArgs and the Miles runtime still use the short field names.
     args.sglang_tp_size = args.rollout_num_gpus_per_engine
+    args.sglang_dp_size = values.get("sglang_dp_size", values.get("sglang_data_parallel_size", 1))
+    args.sglang_pp_size = values.get("sglang_pp_size", values.get("sglang_pipeline_parallel_size", 1))
+    args.sglang_ep_size = values.get("sglang_ep_size", values.get("sglang_expert_parallel_size", 1))
 
     if args.true_on_policy_mode:
         args.sglang_enable_deterministic_inference = True

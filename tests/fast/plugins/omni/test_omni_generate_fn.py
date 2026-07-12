@@ -127,6 +127,32 @@ async def test_generate_keeps_prompt_and_audio_actions_separate(monkeypatch, hig
 
 
 @pytest.mark.asyncio
+async def test_generate_targets_single_external_omni_engine(monkeypatch, higgs_response: dict) -> None:
+    seen: dict = {}
+    response = deepcopy(higgs_response)
+    response["meta_info"]["prompt_tokens"] = 5
+
+    async def fake_post(url: str, payload: dict):
+        seen["url"] = url
+        return response
+
+    monkeypatch.setattr(omni_generate_fn, "post", fake_post)
+    args = SimpleNamespace(
+        rollout_external=True,
+        rollout_external_engine_addrs=["127.0.0.1:8300"],
+        rollout_max_response_len=64,
+        rollout_max_context_len=128,
+    )
+    state = SimpleNamespace(args=args, processor=None, tokenizer=FakeHiggsTokenizer())
+
+    await OmniGenerateFn()(
+        GenerateFnInput(state=state, sample=Sample(prompt="speak"), sampling_params={}, evaluation=False)
+    )
+
+    assert seen["url"] == "http://127.0.0.1:8300/generate"
+
+
+@pytest.mark.asyncio
 async def test_generate_builds_zero_shot_prompt_for_normal_empty_token_sample(
     monkeypatch, higgs_response: dict
 ) -> None:

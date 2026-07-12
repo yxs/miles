@@ -64,6 +64,7 @@ def validate_higgs_single_device_config(args: Any, *, data_parallel_size: int | 
         "true_on_policy_mode": False,
         "hidden_dropout": 0.0,
         "attention_dropout": 0.0,
+        "masked_softmax_fusion": False,
         "vocab_size": 151936,
         "padded_vocab_size": 151936,
         "group_query_attention": True,

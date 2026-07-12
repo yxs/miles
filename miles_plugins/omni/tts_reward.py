@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import io
@@ -12,6 +13,7 @@ import wave
 from dataclasses import dataclass, field
 from typing import Any
 
+import aiohttp
 import numpy as np
 
 from miles.utils.types import DecodedAudio, Sample
@@ -47,14 +49,7 @@ def character_error_rate(reference: str, hypothesis: str) -> float:
 
 def decode_wav(audio: DecodedAudio) -> tuple[np.ndarray, int]:
     """Decode the typed server artifact and verify its declared sample rate."""
-    encoded = audio.data.split(",", 1)[1] if audio.data.startswith("data:") and "," in audio.data else audio.data
-    try:
-        raw = base64.b64decode(encoded, validate=True)
-    except (binascii.Error, ValueError) as error:
-        raise ValueError("decoded audio is not valid base64") from error
-    if not raw:
-        raise ValueError("decoded WAV is empty")
-
+    raw = _decode_audio_bytes(audio)
     try:
         with wave.open(io.BytesIO(raw), "rb") as wav_file:
             if wav_file.getsampwidth() != 2:
@@ -71,6 +66,40 @@ def decode_wav(audio: DecodedAudio) -> tuple[np.ndarray, int]:
     if channels <= 0 or frame_count <= 0 or pcm.size != frame_count * channels:
         raise ValueError("decoded WAV contains no complete audio frames")
     waveform = pcm.reshape(frame_count, channels).astype(np.float32).mean(axis=1) / 32768.0
+    return waveform, sample_rate
+
+
+def _decode_audio_bytes(audio: DecodedAudio) -> bytes:
+    encoded = audio.data.split(",", 1)[1] if audio.data.startswith("data:") and "," in audio.data else audio.data
+    try:
+        raw = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise ValueError("decoded audio is not valid base64") from error
+    if not raw:
+        raise ValueError("decoded WAV is empty")
+    return raw
+
+
+def _validate_audio(
+    audio: DecodedAudio, target_text: str, reward: TtsRoundTripReward
+) -> tuple[np.ndarray, int] | None:
+    try:
+        waveform, sample_rate = decode_wav(audio)
+    except ValueError:
+        return None
+    duration = waveform.size / sample_rate
+    if not reward.min_duration_seconds <= duration <= reward.max_duration_seconds:
+        return None
+    if not bool(np.isfinite(waveform).all()):
+        return None
+    rms = float(np.sqrt(np.mean(np.square(waveform, dtype=np.float64))))
+    if not math.isfinite(rms) or rms < reward.silence_rms_floor:
+        return None
+    clipped_fraction = float(np.mean(np.abs(waveform) >= (32767.0 / 32768.0)))
+    if clipped_fraction > reward.max_clipped_fraction:
+        return None
+    if not normalize_asr_text(target_text):
+        return None
     return waveform, sample_rate
 
 
@@ -127,43 +156,104 @@ class TtsRoundTripReward:
         return self._processor.batch_decode(token_ids, skip_special_tokens=True)[0]
 
     def score(self, audio: DecodedAudio, target_text: str) -> float:
-        try:
-            waveform, sample_rate = decode_wav(audio)
-        except ValueError:
+        validated = _validate_audio(audio, target_text, self)
+        if validated is None:
             return INVALID_AUDIO_REWARD
-
-        duration = waveform.size / sample_rate
-        if not self.min_duration_seconds <= duration <= self.max_duration_seconds:
-            return INVALID_AUDIO_REWARD
-        if not bool(np.isfinite(waveform).all()):
-            return INVALID_AUDIO_REWARD
-        rms = float(np.sqrt(np.mean(np.square(waveform, dtype=np.float64))))
-        if not math.isfinite(rms) or rms < self.silence_rms_floor:
-            return INVALID_AUDIO_REWARD
-        clipped_fraction = float(np.mean(np.abs(waveform) >= (32767.0 / 32768.0)))
-        if clipped_fraction > self.max_clipped_fraction:
-            return INVALID_AUDIO_REWARD
-        normalized_target = normalize_asr_text(target_text)
-        if not normalized_target:
-            return INVALID_AUDIO_REWARD
+        waveform, sample_rate = validated
 
         # Model loading and inference failures are infrastructure errors, not bad samples.
         transcript = self.transcribe(waveform, sample_rate)
-        reward = 1.0 - character_error_rate(normalized_target, transcript)
+        reward = 1.0 - character_error_rate(target_text, transcript)
         return float(min(1.0, max(0.0, reward)))
 
 
-_SHARED_REWARD: TtsRoundTripReward | None = None
+@dataclass
+class SglangOmniASRReward(TtsRoundTripReward):
+    """Round-trip reward backed by concurrent OpenAI-compatible ASR requests."""
+
+    base_url: str = field(default_factory=lambda: os.environ.get("MILES_TTS_ASR_URL", "http://127.0.0.1:8080"))
+    asr_model_path: str = field(default_factory=lambda: os.environ.get("MILES_TTS_ASR_MODEL", "Qwen/Qwen3-ASR-1.7B"))
+    language: str = field(default_factory=lambda: os.environ.get("MILES_TTS_ASR_LANGUAGE", "en"))
+    concurrency: int = field(default_factory=lambda: int(os.environ.get("MILES_TTS_ASR_CONCURRENCY", "32")))
+    timeout_seconds: float = field(default_factory=lambda: float(os.environ.get("MILES_TTS_ASR_TIMEOUT", "300")))
+
+    @property
+    def transcription_url(self) -> str:
+        base_url = self.base_url.rstrip("/")
+        if base_url.endswith("/v1/audio/transcriptions"):
+            return base_url
+        return f"{base_url}/v1/audio/transcriptions"
+
+    async def score_batch(self, items: list[tuple[DecodedAudio, str]]) -> list[float]:
+        if self.concurrency <= 0:
+            raise ValueError("TTS ASR concurrency must be positive")
+
+        rewards = [INVALID_AUDIO_REWARD] * len(items)
+        valid: list[tuple[int, DecodedAudio, str]] = []
+        for index, (audio, target_text) in enumerate(items):
+            if _validate_audio(audio, target_text, self) is not None:
+                valid.append((index, audio, target_text))
+        if not valid:
+            return rewards
+
+        semaphore = asyncio.Semaphore(self.concurrency)
+        timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)
+        connector = aiohttp.TCPConnector(limit=self.concurrency)
+        async with aiohttp.ClientSession(timeout=timeout, connector=connector, trust_env=False) as session:
+
+            async def score_one(index: int, audio: DecodedAudio, target_text: str) -> tuple[int, float]:
+                form = aiohttp.FormData()
+                form.add_field("model", self.asr_model_path)
+                form.add_field("language", self.language)
+                form.add_field("response_format", "json")
+                form.add_field(
+                    "file",
+                    _decode_audio_bytes(audio),
+                    filename=f"rollout-{index}.wav",
+                    content_type="audio/wav",
+                )
+                async with semaphore, session.post(self.transcription_url, data=form) as response:
+                    if response.status >= 400:
+                        body = await response.text()
+                        raise RuntimeError(f"ASR request failed with HTTP {response.status}: {body[:500]}")
+                    payload = await response.json()
+                transcript = payload.get("text") if isinstance(payload, dict) else None
+                if not isinstance(transcript, str):
+                    raise RuntimeError("ASR response must contain a string 'text' field")
+                reward = 1.0 - character_error_rate(target_text, transcript)
+                return index, float(min(1.0, max(0.0, reward)))
+
+            results = await asyncio.gather(*(score_one(*item) for item in valid))
+        for index, reward in results:
+            rewards[index] = reward
+        return rewards
 
 
-def _reward_model(args: Any) -> TtsRoundTripReward:
+_SHARED_REWARD: TtsRoundTripReward | SglangOmniASRReward | None = None
+
+
+def _reward_model(args: Any) -> TtsRoundTripReward | SglangOmniASRReward:
     global _SHARED_REWARD
     if _SHARED_REWARD is None:
         values = vars(args)
-        _SHARED_REWARD = TtsRoundTripReward(
-            asr_model_path=values.get("tts_asr_model", os.environ.get("MILES_TTS_ASR_MODEL", "openai/whisper-base")),
-            device=values.get("tts_asr_device", os.environ.get("MILES_TTS_ASR_DEVICE", "cpu")),
-        )
+        backend = values.get("tts_asr_backend", os.environ.get("MILES_TTS_ASR_BACKEND", "local"))
+        if backend == "sglang_omni":
+            _SHARED_REWARD = SglangOmniASRReward(
+                base_url=values.get("tts_asr_url", os.environ.get("MILES_TTS_ASR_URL", "http://127.0.0.1:8080")),
+                asr_model_path=values.get("tts_asr_model")
+                or os.environ.get("MILES_TTS_ASR_MODEL", "Qwen/Qwen3-ASR-1.7B"),
+                language=values.get("tts_asr_language", os.environ.get("MILES_TTS_ASR_LANGUAGE", "en")),
+                concurrency=values.get("tts_asr_concurrency", int(os.environ.get("MILES_TTS_ASR_CONCURRENCY", "32"))),
+                timeout_seconds=values.get("tts_asr_timeout", float(os.environ.get("MILES_TTS_ASR_TIMEOUT", "300"))),
+            )
+        elif backend == "local":
+            _SHARED_REWARD = TtsRoundTripReward(
+                asr_model_path=values.get("tts_asr_model")
+                or os.environ.get("MILES_TTS_ASR_MODEL", "openai/whisper-base"),
+                device=values.get("tts_asr_device", os.environ.get("MILES_TTS_ASR_DEVICE", "cpu")),
+            )
+        else:
+            raise ValueError(f"unsupported TTS ASR backend: {backend!r}")
     return _SHARED_REWARD
 
 
@@ -192,6 +282,19 @@ async def compute_tts_reward(
 ) -> float | list[float]:
     """Miles custom reward hook; decoded waveform bytes never enter training data."""
     reward_model = _reward_model(args)
+    if isinstance(reward_model, SglangOmniASRReward):
+        samples = sample if isinstance(sample, list) else [sample]
+        try:
+            items = [(item.decoded_audio, _target_text(item)) for item in samples if item.decoded_audio is not None]
+            valid_indices = [index for index, item in enumerate(samples) if item.decoded_audio is not None]
+            scored = await reward_model.score_batch(items)
+            rewards = [INVALID_AUDIO_REWARD] * len(samples)
+            for index, reward in zip(valid_indices, scored, strict=True):
+                rewards[index] = reward
+            return rewards if isinstance(sample, list) else rewards[0]
+        finally:
+            for item in samples:
+                item.decoded_audio = None
     if isinstance(sample, list):
         try:
             return [_score_and_release(reward_model, item) for item in sample]
@@ -203,6 +306,7 @@ async def compute_tts_reward(
 
 __all__ = [
     "INVALID_AUDIO_REWARD",
+    "SglangOmniASRReward",
     "TtsRoundTripReward",
     "character_error_rate",
     "compute_tts_reward",

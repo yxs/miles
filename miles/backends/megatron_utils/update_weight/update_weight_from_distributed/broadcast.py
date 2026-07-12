@@ -79,6 +79,17 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
                 self.args, self._group_name, rollout_engines
             )
 
+    def disconnect_rollout_engines(self) -> None:
+        if not self._is_source or self._model_update_groups is None:
+            return
+        disconnect_rollout_engines_from_distributed(
+            self.args,
+            self._group_name,
+            self._model_update_groups,
+            self.rollout_engines,
+        )
+        self._model_update_groups = None
+
     @property
     def _is_source(self):
         """If it's the source gpu that broadcasting weights to rollout side"""
@@ -209,6 +220,11 @@ def update_weights_from_distributed(
     """
     Send metadata (Ray), broadcast tensors (NCCL rank 0 → engines).
     """
+    # HF conversion commonly returns split or permuted views. NCCL collectives
+    # require dense tensors, and the receiver allocates from these exact shapes.
+    converted_named_tensors = [
+        (name, tensor if tensor.is_contiguous() else tensor.contiguous()) for name, tensor in converted_named_tensors
+    ]
     refs = [
         engine.update_weights_from_distributed.remote(
             names=[name for name, _ in converted_named_tensors],
@@ -220,10 +236,20 @@ def update_weights_from_distributed(
         for engine in rollout_engines
     ]
 
-    handles = []
-    for _, param in converted_named_tensors:
-        handles.append(dist.broadcast(param.data, 0, group=group, async_op=True))
-    for handle in handles:
-        handle.wait()
+    for name, param in converted_named_tensors:
+        # Keep only one NCCL collective in flight. Some large dense models have
+        # hundreds of exported tensors, and enqueueing the complete update at
+        # once can fail before the receiver drains the first broadcast.
+        try:
+            dist.broadcast(param.data, 0, group=group)
+        except Exception as error:
+            if hasattr(error, "add_note"):
+                error.add_note(
+                    "weight broadcast failed for "
+                    f"{name!r}: shape={tuple(param.shape)}, dtype={param.dtype}, "
+                    f"device={param.device}, stride={param.stride()}, "
+                    f"contiguous={param.is_contiguous()}"
+                )
+            raise
 
     return refs

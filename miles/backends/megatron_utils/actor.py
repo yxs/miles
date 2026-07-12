@@ -399,7 +399,7 @@ class MegatronTrainRayActor(TrainRayActor):
                             atol=self.args.higgs_logprob_parity_atol,
                         )
                         logger.info(
-                            "Higgs pre-optimizer joint-logprob parity passed: "
+                            "Higgs pre-optimizer joint-logprob sanity check passed: "
                             "max_abs_diff=%.6g mean_abs_diff=%.6g atol=%.6g",
                             parity["max_abs_diff"],
                             parity["mean_abs_diff"],

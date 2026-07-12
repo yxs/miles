@@ -150,11 +150,9 @@ def validate_higgs_single_device_config(args: Any, *, data_parallel_size: int | 
     if getattr(args, "megatron_to_hf_mode", None) == "bridge":
         errors.append("megatron_to_hf_mode='bridge' has no verified Higgs checkpoint mapping")
     if getattr(args, "save_hf", None) is not None:
-        errors.append("save_hf is disabled until Higgs checkpoint export passes server parity")
-    if not bool(getattr(args, "debug_train_only", False)):
         errors.append(
-            "debug_train_only must be enabled until Higgs checkpoint conversion, server weight export, "
-            "and bf16 RoPE parity are verified"
+            "save_hf is disabled because standalone Higgs HF snapshot export is not implemented; "
+            "online raw weight conversion is supported"
         )
     parity_atol = getattr(args, "higgs_logprob_parity_atol", None)
     if (

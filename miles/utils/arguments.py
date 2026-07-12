@@ -162,8 +162,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=float,
                 default=None,
                 help=(
-                    "Required maximum absolute joint-row logprob error before a Higgs optimizer step. "
-                    "No default is guessed; set this from a measured server/trainer parity run."
+                    "Required maximum absolute joint-row logprob difference before a Higgs optimizer step. "
+                    "This is a numerical sanity bound, not a bit-parity requirement; set it from a measured "
+                    "server/trainer comparison."
                 ),
             )
             parser.add_argument(

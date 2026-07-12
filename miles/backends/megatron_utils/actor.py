@@ -401,9 +401,15 @@ class MegatronTrainRayActor(TrainRayActor):
                             rollout_data["log_probs"],
                             atol=self.args.higgs_logprob_parity_atol,
                         )
-                        logger.info(
-                            "Higgs pre-optimizer joint-logprob sanity check passed: "
-                            "max_abs_diff=%.6g mean_abs_diff=%.6g atol=%.6g",
+                        log = logger.info if parity["within_tolerance"] else logger.warning
+                        log(
+                            "Higgs pre-optimizer joint-logprob parity %s: "
+                            "max_abs_diff=%.6g mean_abs_diff=%.6g warning_atol=%.6g",
+                            (
+                                "within measured tolerance"
+                                if parity["within_tolerance"]
+                                else "exceeded measured tolerance"
+                            ),
                             parity["max_abs_diff"],
                             parity["mean_abs_diff"],
                             self.args.higgs_logprob_parity_atol,

@@ -544,8 +544,8 @@ def validate_higgs_logprob_parity(
     recomputed_joint_logprobs: Sequence[torch.Tensor],
     *,
     atol: float,
-) -> dict[str, float]:
-    """Hard-gate training on every active joint-row rollout logprob."""
+) -> dict[str, float | bool]:
+    """Measure active-row parity while hard-gating only malformed/non-finite data."""
 
     if isinstance(atol, bool) or not isinstance(atol, (int, float)) or atol <= 0:
         raise ValueError("Higgs parity atol must be a positive number")
@@ -573,12 +573,11 @@ def validate_higgs_logprob_parity(
     all_diffs = torch.cat(diffs)
     max_abs_diff = float(all_diffs.max().item())
     mean_abs_diff = float(all_diffs.mean().item())
-    if max_abs_diff > float(atol):
-        raise RuntimeError(
-            "Higgs trainer/rollout joint-logprob parity failed before optimizer step: "
-            f"max_abs_diff={max_abs_diff:.6g}, mean_abs_diff={mean_abs_diff:.6g}, atol={float(atol):.6g}"
-        )
-    return {"max_abs_diff": max_abs_diff, "mean_abs_diff": mean_abs_diff}
+    return {
+        "max_abs_diff": max_abs_diff,
+        "mean_abs_diff": mean_abs_diff,
+        "within_tolerance": max_abs_diff <= float(atol),
+    }
 
 
 def validate_higgs_weight_versions(

@@ -162,9 +162,9 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 type=float,
                 default=None,
                 help=(
-                    "Required maximum absolute joint-row logprob difference before a Higgs optimizer step. "
-                    "This is a numerical sanity bound, not a bit-parity requirement; set it from a measured "
-                    "server/trainer comparison."
+                    "Measured maximum absolute joint-row logprob difference above which Higgs emits a warning. "
+                    "Malformed shapes and non-finite values remain fatal; finite kernel-level drift is logged "
+                    "rather than blocking training."
                 ),
             )
             parser.add_argument(

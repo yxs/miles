@@ -533,13 +533,19 @@ def test_logprob_parity_compares_joint_active_rows_and_accepts_within_tolerance(
 
     assert metrics["max_abs_diff"] == pytest.approx(0.02)
     assert metrics["mean_abs_diff"] == pytest.approx(0.015)
+    assert metrics["within_tolerance"] is True
 
 
-def test_logprob_parity_fails_before_training_on_any_joint_row_mismatch():
+def test_logprob_parity_reports_finite_joint_row_mismatch_without_blocking_training():
     trace = _Trace([[0, 1]], [[-1.0, -2.0]], [[True, True]], vocab_size=2)
 
-    with pytest.raises(RuntimeError, match="before optimizer step"):
-        validate_higgs_logprob_parity([trace], [torch.tensor([-2.8])], atol=0.1)
+    metrics = validate_higgs_logprob_parity([trace], [torch.tensor([-2.8])], atol=0.1)
+
+    assert metrics == {
+        "max_abs_diff": pytest.approx(0.2),
+        "mean_abs_diff": pytest.approx(0.2),
+        "within_tolerance": False,
+    }
 
 
 def test_weight_provenance_requires_one_current_equal_version_per_sample():

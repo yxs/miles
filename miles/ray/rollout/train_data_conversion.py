@@ -39,6 +39,16 @@ def convert_samples_to_train_data(
         "sample_indices": [sample.index for sample in samples],
     }
 
+    trace_presence = [sample.action_trace is not None for sample in samples]
+    if any(trace_presence) and not all(trace_presence):
+        raise ValueError("cannot mix samples with and without structured action traces")
+    if trace_presence and all(trace_presence):
+        action_traces = []
+        for sample in samples:
+            sample.action_trace.validate()
+            action_traces.append(sample.action_trace)
+        train_data["action_traces"] = action_traces
+
     # loss mask
     # TODO: compress the loss mask
     loss_masks = []
@@ -152,6 +162,7 @@ def split_train_data_by_dp(args, data, dp_size):
             "round_number",
             "sample_indices",
             "rollout_log_probs",
+            "action_traces",
             "rollout_routed_experts",
             "rollout_indexer_topk",
             "prompt",

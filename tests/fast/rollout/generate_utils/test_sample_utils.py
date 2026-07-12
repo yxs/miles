@@ -4,7 +4,7 @@ import numpy
 import pytest
 
 from miles.rollout.generate_utils.sample_utils import _merge_sample_pair
-from miles.utils.types import Sample
+from miles.utils.types import DiscreteActionStream, RolloutActionTrace, Sample
 
 
 @pytest.fixture
@@ -174,4 +174,28 @@ class TestMergeSamples:
         )
 
         with pytest.raises(AssertionError, match="loss_mask length"):
+            _merge_sample_pair(a, b, mock_tokenizer)
+
+    def test_structured_action_trace_cannot_be_merged(self, mock_tokenizer):
+        a = make_sample(tokens=[1, 2, 10], response_length=1, loss_mask=[1])
+        b = make_sample(tokens=[1, 2, 10, 20, 30], response_length=1, loss_mask=[1])
+        stream = DiscreteActionStream(
+            name="higgs_codes",
+            stage="tts_engine",
+            modality="audio",
+            shape=[1, 1],
+            vocab_size=8,
+            actions=[[3]],
+            policy_logprobs=[[-0.2]],
+            action_mask=[[True]],
+            channel_ids=[0],
+        )
+        a.action_trace = RolloutActionTrace(
+            version=2,
+            model_family="higgs_tts",
+            total_action_count=1,
+            action_streams=[stream],
+        )
+
+        with pytest.raises(ValueError, match="structured action traces cannot be merged"):
             _merge_sample_pair(a, b, mock_tokenizer)

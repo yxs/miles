@@ -22,6 +22,9 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
     """Merge two samples generated from sibling inference engine calls."""
     a, b = deepcopy(a), deepcopy(b)
 
+    if a.action_trace is not None or b.action_trace is not None:
+        raise ValueError("structured action traces cannot be merged")
+
     def _merge_equal_value(field):
         x = getattr(a, field)
         y = getattr(b, field)
@@ -118,6 +121,8 @@ def _merge_sample_pair(a: Sample, b: Sample, tokenizer) -> Sample:
             loss_mask=a.loss_mask + [0] * obs_len + b.loss_mask,
             weight_versions=a.weight_versions + b.weight_versions,
             rollout_log_probs=a.rollout_log_probs + [0.0] * obs_len + b.rollout_log_probs,
+            action_trace=None,
+            decoded_audio=_merge_equal_value("decoded_audio"),
             teacher_log_probs=_merge_optional_per_token("teacher_log_probs"),
             opd_reverse_kl=_merge_optional_per_token("opd_reverse_kl"),
             rollout_routed_experts=b.rollout_routed_experts,

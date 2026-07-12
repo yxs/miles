@@ -5,7 +5,28 @@ from unittest.mock import MagicMock
 import numpy
 import pytest
 
-from miles.utils.types import Sample
+from miles.utils.types import DecodedAudio, DiscreteActionStream, RolloutActionTrace, Sample
+
+
+def _make_action_trace() -> RolloutActionTrace:
+    stream = DiscreteActionStream(
+        name="higgs_codes",
+        stage="tts_engine",
+        modality="audio",
+        shape=[2, 2],
+        vocab_size=8,
+        actions=[[0, 3], [4, 5]],
+        policy_logprobs=[[0.0, -0.3], [-0.4, -0.5]],
+        action_mask=[[False, True], [True, True]],
+        codec_content_mask=[[False, True], [True, True]],
+        channel_ids=[0, 1],
+    )
+    return RolloutActionTrace(
+        version=2,
+        model_family="higgs_tts",
+        total_action_count=3,
+        action_streams=[stream],
+    )
 
 
 def _make_sample(
@@ -105,3 +126,94 @@ class TestStripLastOutputTokens:
         original_tokens = list(s.tokens)
         s.strip_last_output_tokens(-1, tokenizer)
         assert s.tokens == original_tokens
+
+
+class TestStructuredActionTypes:
+    def test_sample_dict_round_trip_preserves_typed_artifacts(self):
+        sample = Sample(
+            tokens=[1, 2],
+            action_trace=_make_action_trace(),
+            decoded_audio=DecodedAudio(data="UklGRg==", format="wav", sample_rate=24000),
+        )
+
+        restored = Sample.from_dict(sample.to_dict())
+
+        assert isinstance(restored.action_trace, RolloutActionTrace)
+        assert isinstance(restored.action_trace.action_streams[0], DiscreteActionStream)
+        assert isinstance(restored.decoded_audio, DecodedAudio)
+        assert restored.action_trace == sample.action_trace
+        assert restored.decoded_audio == sample.decoded_audio
+
+    def test_action_stream_rejects_shape_mismatch(self):
+        data = _make_action_trace().action_streams[0].to_dict()
+        data["shape"] = [3, 2]
+
+        with pytest.raises(ValueError, match="declared shape"):
+            DiscreteActionStream.from_dict(data)
+
+    def test_action_stream_rejects_nonfinite_sampled_logprob(self):
+        data = _make_action_trace().action_streams[0].to_dict()
+        data["policy_logprobs"][0][1] = float("nan")
+
+        with pytest.raises(ValueError, match="non-finite"):
+            DiscreteActionStream.from_dict(data)
+
+    def test_action_stream_rejects_nonzero_forced_logprob(self):
+        data = _make_action_trace().action_streams[0].to_dict()
+        data["policy_logprobs"][0][0] = -1.0
+
+        with pytest.raises(ValueError, match="must be zero"):
+            DiscreteActionStream.from_dict(data)
+
+    def test_action_stream_rejects_out_of_range_action(self):
+        data = _make_action_trace().action_streams[0].to_dict()
+        data["actions"][1][1] = data["vocab_size"]
+
+        with pytest.raises(ValueError, match="outside"):
+            DiscreteActionStream.from_dict(data)
+
+    def test_action_stream_requires_strict_ordered_channel_ids(self):
+        data = _make_action_trace().action_streams[0].to_dict()
+        data["channel_ids"] = [False, 1]
+
+        with pytest.raises(ValueError, match="channel_ids"):
+            DiscreteActionStream.from_dict(data)
+
+    def test_to_dict_revalidates_mutated_streams(self):
+        stream = _make_action_trace().action_streams[0]
+        stream.policy_logprobs[0][0] = -1.0
+
+        with pytest.raises(ValueError, match="must be zero"):
+            stream.to_dict()
+
+    def test_trace_rejects_incorrect_action_count(self):
+        data = _make_action_trace().to_dict()
+        data["total_action_count"] = 2
+
+        with pytest.raises(ValueError, match="total_action_count"):
+            RolloutActionTrace.from_dict(data)
+
+    def test_trace_rejects_unknown_fields(self):
+        data = _make_action_trace().to_dict()
+        data["unexpected"] = True
+
+        with pytest.raises(ValueError, match="extra=.*unexpected"):
+            RolloutActionTrace.from_dict(data)
+
+    def test_decoded_audio_requires_wav_with_positive_sample_rate(self):
+        with pytest.raises(ValueError, match="format"):
+            DecodedAudio(data="data", format="mp3", sample_rate=24000)
+        with pytest.raises(ValueError, match="sample_rate"):
+            DecodedAudio(data="data", format="wav", sample_rate=0)
+
+    def test_reset_for_retry_clears_structured_outputs(self):
+        sample = Sample(
+            tokens=[1, 2],
+            action_trace=_make_action_trace(),
+            decoded_audio=DecodedAudio(data="UklGRg==", format="wav", sample_rate=24000),
+        )
+
+        sample.reset_for_retry()
+
+        assert sample.action_trace is None
+        assert sample.decoded_audio is None

@@ -133,15 +133,15 @@ def get_higgs_batch(
     advantages = raw_batch["advantages"]
     if require_advantages and advantages is None:
         raise ValueError("Higgs training microbatches require GRPO advantages")
-    ppo_old_joint_logprobs = raw_batch.get("log_probs")
-    if require_advantages and ppo_old_joint_logprobs is None:
+    old_policy_joint_logprobs = raw_batch.get("log_probs")
+    if require_advantages and old_policy_joint_logprobs is None:
         raise ValueError("Higgs training requires pre-update Megatron joint logprobs")
     device = raw_batch["tokens"][0].device
     batch = collate_higgs_policy_batch(
         raw_batch["tokens"],
         raw_batch["action_traces"],
         advantages=advantages,
-        ppo_old_joint_logprobs=ppo_old_joint_logprobs,
+        old_policy_joint_logprobs=old_policy_joint_logprobs,
         device=device,
     )
     if batch.num_codebooks != args.higgs_num_codebooks:

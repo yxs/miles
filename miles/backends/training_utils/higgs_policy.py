@@ -1,4 +1,4 @@
-"""Structured Higgs policy batching and joint-row PPO math.
+"""Structured Higgs policy batching and joint-row GRPO math.
 
 This module deliberately depends only on PyTorch.  The tensor contract is
 shared by the Megatron integration and CPU unit tests, while checkpoint
@@ -260,7 +260,7 @@ def collate_higgs_policy_batch(
     action_traces: Sequence[Any],
     *,
     advantages: Sequence[Any] | None = None,
-    ppo_old_joint_logprobs: Sequence[Any] | None = None,
+    old_policy_joint_logprobs: Sequence[Any] | None = None,
     pad_token_id: int = 0,
     device: torch.device | str | None = None,
 ) -> HiggsPolicyBatch:
@@ -272,15 +272,15 @@ def collate_higgs_policy_batch(
     Forced BOC/EOC cells remain in ``prior_codes`` even though they are masked
     out of the policy loss. Server per-cell logprobs remain in
     ``old_cell_logprobs`` for diagnostics; when supplied, the pre-update
-    Megatron joint logprobs are the PPO old-policy baseline.
+    Megatron joint logprobs are the GRPO old-policy baseline.
     """
 
     if len(prompts) == 0 or len(prompts) != len(action_traces):
         raise ValueError("prompts and action_traces must have the same nonzero batch size")
     if advantages is not None and len(advantages) != len(prompts):
         raise ValueError("advantages must have one value or row vector per sample")
-    if ppo_old_joint_logprobs is not None and len(ppo_old_joint_logprobs) != len(prompts):
-        raise ValueError("PPO old joint logprobs must have one row vector per sample")
+    if old_policy_joint_logprobs is not None and len(old_policy_joint_logprobs) != len(prompts):
+        raise ValueError("old-policy joint logprobs must have one row vector per sample")
     if type(pad_token_id) is not int or pad_token_id < 0:
         raise ValueError("pad_token_id must be a non-negative integer")
 
@@ -352,16 +352,16 @@ def collate_higgs_policy_batch(
 
     row_mask = action_mask.any(dim=-1)
     old_joint_logprobs = old_cell_logprobs.sum(dim=-1)
-    if ppo_old_joint_logprobs is not None:
+    if old_policy_joint_logprobs is not None:
         old_joint_logprobs.zero_()
         for batch_index, (values, action_length) in enumerate(
-            zip(ppo_old_joint_logprobs, action_lengths.tolist(), strict=True)
+            zip(old_policy_joint_logprobs, action_lengths.tolist(), strict=True)
         ):
             values = torch.as_tensor(values, dtype=torch.float32, device=device)
             if values.ndim != 1 or values.numel() != action_length:
-                raise ValueError("each PPO old joint logprob vector must match its action-row count")
+                raise ValueError("each old-policy joint logprob vector must match its action-row count")
             if not bool(torch.isfinite(values).all()):
-                raise ValueError("PPO old joint logprobs must be finite")
+                raise ValueError("old-policy joint logprobs must be finite")
             old_joint_logprobs[batch_index, :action_length] = values
     return HiggsPolicyBatch(
         input_ids=input_ids,
@@ -454,7 +454,7 @@ def higgs_joint_policy_loss(
     eps_clip: float,
     eps_clip_high: float | None = None,
 ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
-    """Apply PPO clipping once to each joint multi-codebook row ratio."""
+    """Apply GRPO's clipped surrogate once to each joint multi-codebook row ratio."""
 
     if current_joint_logprobs.shape != old_joint_logprobs.shape or row_mask.shape != current_joint_logprobs.shape:
         raise ValueError("joint logprobs and row_mask must have identical [batch, time] shapes")
@@ -463,7 +463,7 @@ def higgs_joint_policy_loss(
     if advantages.shape != current_joint_logprobs.shape:
         raise ValueError("Higgs advantages must have shape [batch] or [batch, time]")
     if eps_clip < 0 or (eps_clip_high is not None and eps_clip_high < 0):
-        raise ValueError("PPO clipping thresholds must be non-negative")
+        raise ValueError("GRPO clipping thresholds must be non-negative")
     eps_clip_high = eps_clip if eps_clip_high is None else eps_clip_high
 
     zeros = current_joint_logprobs.new_zeros(())
@@ -487,14 +487,11 @@ def higgs_joint_policy_loss(
     clipped = clipped_ratio * clean_advantages
     per_row_loss = -torch.minimum(unclipped, clipped)
     clipfrac = ((ratio < 1.0 - eps_clip) | (ratio > 1.0 + eps_clip_high)).to(current_joint_logprobs.dtype)
-    ppo_kl = old_joint_logprobs - current_joint_logprobs
-
     loss = _sum_of_sample_row_means(per_row_loss, row_mask)
     metrics = {
         "loss": loss.detach(),
         "pg_loss": loss.detach(),
         "pg_clipfrac": _sum_of_sample_row_means(clipfrac, row_mask).detach(),
-        "ppo_kl": _sum_of_sample_row_means(ppo_kl, row_mask).detach(),
     }
     return loss, metrics
 

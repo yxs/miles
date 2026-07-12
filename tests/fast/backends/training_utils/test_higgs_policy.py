@@ -157,7 +157,7 @@ def test_collation_right_pads_variable_prompt_and_action_lengths():
     assert batch.row_mask.tolist() == [[True, False, False], [True, True, True]]
 
 
-def test_collation_uses_recomputed_joint_logprobs_as_ppo_baseline():
+def test_collation_uses_recomputed_joint_logprobs_as_old_policy_baseline():
     trace = _Trace(
         [[0, 1], [1, 2]],
         [[-1.0, -2.0], [-3.0, -4.0]],
@@ -169,7 +169,7 @@ def test_collation_uses_recomputed_joint_logprobs_as_ppo_baseline():
         [[7, 8]],
         [trace],
         advantages=[1.0],
-        ppo_old_joint_logprobs=[torch.tensor([-2.75, -6.5])],
+        old_policy_joint_logprobs=[torch.tensor([-2.75, -6.5])],
     )
 
     assert torch.allclose(batch.old_cell_logprobs.sum(-1), torch.tensor([[-3.0, -7.0]]))
@@ -183,7 +183,7 @@ def test_collation_uses_recomputed_joint_logprobs_as_ppo_baseline():
         [torch.tensor([-1.0, float("nan")])],
     ],
 )
-def test_collation_rejects_invalid_recomputed_ppo_baseline(baseline):
+def test_collation_rejects_invalid_recomputed_old_policy_baseline(baseline):
     trace = _Trace(
         [[0, 1], [1, 2]],
         [[-1.0, -2.0], [-3.0, -4.0]],
@@ -191,11 +191,11 @@ def test_collation_rejects_invalid_recomputed_ppo_baseline(baseline):
         vocab_size=3,
     )
 
-    with pytest.raises(ValueError, match="PPO old joint logprob"):
+    with pytest.raises(ValueError, match="old-policy joint logprob"):
         collate_higgs_policy_batch(
             [[7, 8]],
             [trace],
-            ppo_old_joint_logprobs=baseline,
+            old_policy_joint_logprobs=baseline,
         )
 
 
@@ -230,7 +230,7 @@ def test_selected_logprobs_use_fp32_full_vocabulary_and_zero_forced_cells():
     assert cell[0, 1, 1].item() == 0.0
 
 
-def test_ppo_clips_the_joint_row_ratio_not_individual_codebook_ratios():
+def test_grpo_clips_the_joint_row_ratio_not_individual_codebook_ratios():
     # Factor ratios 2.0 and 0.55 would be clipped independently, but their
     # joint ratio is 1.1 and must remain unclipped.
     current = torch.tensor([[torch.log(torch.tensor(1.1))]])

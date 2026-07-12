@@ -20,6 +20,67 @@ from .parallel import get_parallel_state
 logger = logging.getLogger(__name__)
 
 
+def _get_higgs_rollout_log_dict(rollout_data: RolloutBatch) -> dict[str, float]:
+    """Summarize structured action rows without text-response alignment."""
+
+    traces = rollout_data["action_traces"]
+    if not traces:
+        raise ValueError("structured rollout logging requires at least one action trace")
+
+    row_masks = []
+    joint_logprobs = []
+    action_rows = []
+    active_rows = []
+    sampled_cells = []
+    for trace in traces:
+        trace.validate()
+        if trace.model_family != "higgs_tts" or len(trace.action_streams) != 1:
+            raise ValueError("structured rollout logging currently supports one Higgs action stream")
+        stream = trace.action_streams[0]
+        action_mask = torch.as_tensor(stream.action_mask, dtype=torch.bool)
+        policy_logprobs = torch.as_tensor(stream.policy_logprobs, dtype=torch.float32)
+        row_mask = action_mask.any(dim=-1)
+        if not bool(row_mask.any()):
+            raise ValueError("each Higgs rollout must contain at least one sampled action row")
+        row_masks.append(row_mask)
+        joint_logprobs.append(torch.where(action_mask, policy_logprobs, 0.0).sum(dim=-1))
+        action_rows.append(float(stream.shape[0]))
+        active_rows.append(float(row_mask.sum().item()))
+        sampled_cells.append(float(action_mask.sum().item()))
+
+    log_dict = {
+        "action_rows": sum(action_rows) / len(action_rows),
+        "active_action_rows": sum(active_rows) / len(active_rows),
+        "sampled_action_cells": sum(sampled_cells) / len(sampled_cells),
+        "rollout_joint_log_probs": sum(
+            values[mask].mean().item() for values, mask in zip(joint_logprobs, row_masks, strict=True)
+        )
+        / len(row_masks),
+    }
+
+    for key in ("advantages", "returns", "log_probs", "ref_log_probs"):
+        values = rollout_data.get(key)
+        if values is None:
+            continue
+        if len(values) != len(row_masks):
+            raise ValueError(f"structured rollout field {key!r} has the wrong sample count")
+        sample_means = []
+        for value, mask in zip(values, row_masks, strict=True):
+            value_tensor = torch.as_tensor(value, dtype=torch.float32, device=mask.device)
+            if value_tensor.ndim != 1 or value_tensor.numel() != mask.numel():
+                raise ValueError(f"structured rollout field {key!r} must align with action rows")
+            sample_means.append(value_tensor[mask].mean().item())
+        log_dict[key] = sum(sample_means) / len(sample_means)
+
+    for key in ("rewards", "raw_reward", "truncated", "response_lengths", "total_lengths"):
+        values = rollout_data.get(key)
+        if values is None or len(values) == 0:
+            continue
+        if all(isinstance(value, (int, float)) for value in values):
+            log_dict[key] = sum(float(value) for value in values) / len(values)
+    return log_dict
+
+
 def gather_log_data(
     metric_name: str,
     args: Namespace,
@@ -104,6 +165,13 @@ def log_rollout_data(rollout_id: int, args: Namespace, rollout_data: RolloutBatc
     - Scalars are converted to Python numbers.
     """
     parallel_state = get_parallel_state()
+    if "action_traces" in rollout_data:
+        if parallel_state.tp.rank == 0 and parallel_state.is_pp_last_stage:
+            gather_log_data("rollout", args, rollout_id, _get_higgs_rollout_log_dict(rollout_data))
+        if args.log_passrate:
+            log_passrate(rollout_id, args, rollout_data)
+        return
+
     if parallel_state.tp.rank == 0 and parallel_state.is_pp_last_stage:
         cp_size = parallel_state.cp.size
         log_dict = {}

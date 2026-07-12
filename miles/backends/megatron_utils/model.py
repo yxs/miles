@@ -26,7 +26,8 @@ from miles.utils.dumper_utils import DumperMegatronUtil, DumperPhase
 from miles.utils.memory_utils import clear_memory
 
 from ..training_utils.ci_utils import check_grad_norm, check_kl
-from ..training_utils.data import DataIterator, get_batch
+from ..training_utils.data import DataIterator, get_batch, get_higgs_batch
+from ..training_utils.higgs_policy import get_higgs_joint_log_probs, is_higgs_policy_enabled
 from ..training_utils.log_utils import aggregate_forward_results, aggregate_train_losses, log_train_step
 from ..training_utils.loss import loss_function
 from ..training_utils.parallel import get_parallel_state
@@ -37,6 +38,7 @@ from .ci_utils import (
     compute_model_hashes_by_layer,
     save_model_hashes,
 )
+from .higgs_model import higgs_model_forward_kwargs
 from .initialize import is_megatron_main_rank
 from .lora_utils import is_lora_enabled, is_lora_model
 from .model_provider import get_model_provider_func
@@ -255,6 +257,11 @@ def forward_only(
 
         assert not return_schedule_plan, "forward_only step should never return schedule plan"
 
+        if is_higgs_policy_enabled(args):
+            higgs_batch = get_higgs_batch(data_iterator, args, require_advantages=False)
+            output_tensor = model(**higgs_model_forward_kwargs(higgs_batch))
+            return output_tensor, partial(get_higgs_joint_log_probs, higgs_batch=higgs_batch)
+
         # Get the batch.
         batch = get_batch(
             data_iterator,
@@ -399,29 +406,35 @@ def train_one_step(
             (loss, num_elems, {"keys": list[str], "values": torch.Tensor}).
         """
 
-        # Get the batch.
-        batch = get_batch(
-            data_iterator,
-            [
-                "tokens",
-                "multimodal_train_inputs",
-                "packed_seq_params",
-                "total_lengths",
-                "response_lengths",
-                "loss_masks",
-                "log_probs",
-                "ref_log_probs",
-                "values",
-                "advantages",
-                "returns",
-                "rollout_log_probs",
-                "max_seq_lens",
-                "opd_reverse_kl",
-            ],
-            args.data_pad_size_multiplier,
-            args.qkv_format,
-            allgather_cp=args.allgather_cp,
-        )
+        if is_higgs_policy_enabled(args):
+            if return_schedule_plan:
+                raise ValueError("combined 1f1b schedule plans are not implemented for Higgs structured policy")
+            higgs_batch = get_higgs_batch(data_iterator, args, require_advantages=True)
+            batch = {"higgs_policy_batch": higgs_batch}
+        else:
+            # Get the legacy causal-text batch.
+            batch = get_batch(
+                data_iterator,
+                [
+                    "tokens",
+                    "multimodal_train_inputs",
+                    "packed_seq_params",
+                    "total_lengths",
+                    "response_lengths",
+                    "loss_masks",
+                    "log_probs",
+                    "ref_log_probs",
+                    "values",
+                    "advantages",
+                    "returns",
+                    "rollout_log_probs",
+                    "max_seq_lens",
+                    "opd_reverse_kl",
+                ],
+                args.data_pad_size_multiplier,
+                args.qkv_format,
+                allgather_cp=args.allgather_cp,
+            )
 
         from miles.utils.replay_base import all_replay_managers
 
@@ -429,7 +442,9 @@ def train_one_step(
         for m in all_replay_managers:
             m.stage = "replay_forward"
 
-        if return_schedule_plan:
+        if is_higgs_policy_enabled(args):
+            output_tensor = model(**higgs_model_forward_kwargs(higgs_batch))
+        elif return_schedule_plan:
             assert not args.enable_mtp_training, "MTP training should not be enabled when using combined 1f1b"
             output_tensor = model.build_schedule_plan(
                 input_ids=batch["tokens"],

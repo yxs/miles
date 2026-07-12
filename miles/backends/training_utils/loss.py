@@ -4,6 +4,11 @@ import torch
 from torch.utils.checkpoint import checkpoint
 
 from miles.backends.training_utils.cp_utils import get_sum_of_sample_mean
+from miles.backends.training_utils.higgs_policy import (
+    higgs_policy_loss_from_logits,
+    is_higgs_policy_enabled,
+    validate_higgs_single_device_config,
+)
 from miles.backends.training_utils.loss_hub.advantages import compute_advantages, normalize_advantages
 from miles.backends.training_utils.loss_hub.logit_processors import get_log_probs_and_entropy, get_values  # noqa: F401
 from miles.backends.training_utils.loss_hub.losses import get_loss_function
@@ -35,6 +40,31 @@ def compute_advantages_and_returns(args: Namespace, rollout_data: RolloutBatch) 
             "total_lengths"). Modified in-place to add "advantages" and
             "returns" keys, each mapping to lists of tensors per sample.
     """
+    if "action_traces" in rollout_data:
+        validate_higgs_single_device_config(args, data_parallel_size=get_parallel_state().intra_dp.size)
+        if not is_higgs_policy_enabled(args):
+            raise ValueError("structured action traces require the Higgs policy adapter")
+        traces = rollout_data["action_traces"]
+        rewards = rollout_data["rewards"]
+        if len(traces) != len(rewards):
+            raise ValueError("Higgs action traces and rewards must have identical batch size")
+        device = rollout_data["tokens"][0].device
+        advantages = []
+        for trace, reward in zip(traces, rewards, strict=True):
+            trace.validate()
+            if trace.model_family != "higgs_tts" or len(trace.action_streams) != 1:
+                raise ValueError("the initial Higgs path requires one higgs_tts action stream")
+            row_count = trace.action_streams[0].shape[0]
+            reward_tensor = torch.as_tensor(reward, dtype=torch.float32, device=device)
+            if reward_tensor.ndim != 0:
+                raise ValueError("each Higgs rollout reward must be scalar")
+            if not bool(torch.isfinite(reward_tensor)):
+                raise ValueError("each Higgs rollout reward must be finite")
+            advantages.append(reward_tensor.expand(row_count).clone())
+        rollout_data["advantages"] = advantages
+        rollout_data["returns"] = [advantage.clone() for advantage in advantages]
+        return
+
     log_probs: list[torch.Tensor] = rollout_data.get("rollout_log_probs" if args.use_rollout_logprobs else "log_probs")
     ref_log_probs: list[torch.Tensor] = rollout_data.get("ref_log_probs")
     rewards: list[float] = rollout_data.get("rewards")
@@ -120,6 +150,33 @@ def loss_function(
           "values" (1D tensor: [count, metric1, metric2, ...]).
     """
     parallel_state = get_parallel_state()
+    if "higgs_policy_batch" in batch:
+        validate_higgs_single_device_config(args, data_parallel_size=parallel_state.intra_dp.size)
+        higgs_batch = batch["higgs_policy_batch"]
+        loss, log, _ = higgs_policy_loss_from_logits(
+            logits,
+            higgs_batch,
+            eps_clip=args.eps_clip,
+            eps_clip_high=args.eps_clip_high,
+        )
+        if apply_megatron_loss_scaling:
+            assert not args.use_dynamic_global_batch_size
+            loss = loss * num_microbatches / args.global_batch_size
+        else:
+            loss = loss / args.global_batch_size
+        metric_values = [
+            torch.tensor(float(higgs_batch.input_ids.shape[0]), device=logits.device),
+            *(value.to(device=logits.device) for value in log.values()),
+        ]
+        return (
+            loss,
+            torch.tensor(1, device=logits.device),
+            {
+                "keys": list(log.keys()),
+                "values": torch.stack(metric_values),
+            },
+        )
+
     num_tokens = sum([torch.clamp_min(loss_mask.sum(), 1) for loss_mask in batch["loss_masks"]])
     num_samples = len(batch["response_lengths"])
 

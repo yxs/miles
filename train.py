@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 from sglang.srt.constants import GPU_MEMORY_TYPE_CUDA_GRAPH, GPU_MEMORY_TYPE_KV_CACHE, GPU_MEMORY_TYPE_WEIGHTS
 
@@ -8,6 +9,8 @@ from miles.utils.async_utils import eager_create_task
 from miles.utils.logging_utils import configure_logger
 from miles.utils.misc import should_run_periodic_action
 from miles.utils.tracking_utils import finish_tracking, init_tracking
+
+logger = logging.getLogger(__name__)
 
 
 async def train(args):
@@ -23,6 +26,17 @@ async def train(args):
     # create the actor and critic models
     actor_model, critic_model = await create_training_models(args, pgs, rollout_manager)
 
+    try:
+        await _run_training(args, actor_model, critic_model, rollout_manager, num_rollout_per_epoch)
+    finally:
+        try:
+            await actor_model.disconnect_rollout_engines()
+        except Exception:
+            logger.exception("Failed to disconnect rollout weight-update groups during shutdown")
+        await rollout_manager.dispose.remote()
+
+
+async def _run_training(args, actor_model, critic_model, rollout_manager, num_rollout_per_epoch):
     if args.offload_rollout:
         await rollout_manager.onload_weights.remote()
 
@@ -105,8 +119,6 @@ async def train(args):
 
         if should_run_periodic_action(rollout_id, args.eval_interval, num_rollout_per_epoch):
             await rollout_manager.eval.remote(rollout_id)
-
-    await rollout_manager.dispose.remote()
 
 
 if __name__ == "__main__":

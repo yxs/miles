@@ -140,6 +140,34 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="The qkv layout.",
             )
             parser.add_argument(
+                "--structured-policy-model-family",
+                choices=["higgs_tts"],
+                default=None,
+                help="Enable a typed non-text policy adapter alongside the legacy causal-text path.",
+            )
+            parser.add_argument(
+                "--higgs-num-codebooks",
+                type=int,
+                default=8,
+                help="Number of channels in the Higgs delayed codebook action stream.",
+            )
+            parser.add_argument(
+                "--higgs-codebook-vocab-size",
+                type=int,
+                default=1026,
+                help="Per-codebook Higgs vocabulary, including BOC and EOC.",
+            )
+            parser.add_argument(
+                "--higgs-logprob-parity-atol",
+                type=float,
+                default=None,
+                help=(
+                    "Measured maximum absolute joint-row logprob difference above which Higgs emits a warning. "
+                    "Malformed shapes and non-finite values remain fatal; finite kernel-level drift is logged "
+                    "rather than blocking training."
+                ),
+            )
+            parser.add_argument(
                 "--linear-attention-backend",
                 type=str,
                 choices=["fla", "flashqla"],
@@ -2009,6 +2037,14 @@ def parse_args(add_custom_arguments=None):
         args.compress_ratios = None
         if args.hf_checkpoint:
             hf_config = load_hf_config(args.hf_checkpoint)
+            if args.structured_policy_model_family == "higgs_tts":
+                from miles.backends.training_utils.higgs_policy import validate_higgs_hf_config
+
+                validate_higgs_hf_config(
+                    hf_config,
+                    num_codebooks=args.higgs_num_codebooks,
+                    codebook_vocab_size=args.higgs_codebook_vocab_size,
+                )
             args.compress_ratios = getattr(hf_config, "compress_ratios", None)
             hf_validate_args(args, hf_config)
 
@@ -2266,7 +2302,13 @@ def miles_validate_args(args):
             args.no_load_optim = True
             args.no_load_rng = True
             args.finetune = True
-            args.load = args.ref_load
+            if args.structured_policy_model_family == "higgs_tts" and args.ref_load is None:
+                # The strict raw Higgs checkpoint loader maps the original HF
+                # checkpoint directly into the TP1 Megatron model on a fresh
+                # run.  Resumes still take the valid Megatron --load path above.
+                args.load = args.hf_checkpoint
+            else:
+                args.load = args.ref_load
             if args.ref_ckpt_step is not None:
                 args.ckpt_step = args.ref_ckpt_step
             args.start_rollout_id = 0
@@ -2556,6 +2598,13 @@ def miles_validate_args(args):
         assert (
             args.use_dynamic_batch_size is False
         ), "Dynamic batch size is not supported for bshd format. Please specify --micro-batch-size instead."
+
+    if args.structured_policy_model_family == "higgs_tts":
+        from miles.backends.training_utils.higgs_policy import validate_higgs_single_device_config
+
+        if args.higgs_num_codebooks <= 0 or args.higgs_codebook_vocab_size <= 0:
+            raise ValueError("Higgs codebook dimensions must be positive")
+        validate_higgs_single_device_config(args)
 
     _maybe_apply_dumper_overrides(args)
 

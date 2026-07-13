@@ -31,6 +31,13 @@ class _HFConfigAlias:
 
 _CONFIG_ALIASES: tuple[_HFConfigAlias, ...] = (
     _HFConfigAlias(
+        model_type="higgs_multimodal_qwen3",
+        base_module="miles_plugins.models.higgs_tts",
+        base_class="HiggsMultimodalQwen3Config",
+        compat_class_name="MilesHiggsMultimodalQwen3Config",
+        auto_model_classes=(),
+    ),
+    _HFConfigAlias(
         model_type="deepseek_v32",
         base_module="transformers.models.deepseek_v3.configuration_deepseek_v3",
         base_class="DeepseekV3Config",
@@ -98,6 +105,15 @@ def load_hf_config(
     """
     register_hf_config_aliases()
     config = AutoConfig.from_pretrained(checkpoint_path, trust_remote_code=trust_remote_code, **autoconfig_kwargs)
+    from miles_plugins.models.higgs_tts import HiggsMultimodalQwen3Config
+
+    if isinstance(config, HiggsMultimodalQwen3Config) and isinstance(config.text_config, dict):
+        # Transformers' dynamic compatibility subclass serializes composition
+        # sub-configs back to dictionaries after construction.  Miles' generic
+        # shape validator expects a normal HF config object.
+        from miles_plugins.models.higgs_tts import build_higgs_text_config
+
+        config.text_config = build_higgs_text_config(config.text_config)
 
     if overrides:
         for key, value in overrides.items():

@@ -22,6 +22,57 @@ from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
 logger = logging.getLogger(__name__)
 
 
+def _extract_omni_distributed_weight_update_transport(model_info: dict) -> dict:
+    transports = []
+    for item in model_info.get("stages", []):
+        if not isinstance(item, dict) or not isinstance(item.get("data"), dict):
+            continue
+        data = item["data"]
+        if data.get("supports_distributed_weight_update"):
+            transport = data.get("distributed_weight_update")
+            if not isinstance(transport, dict):
+                raise RuntimeError(
+                    "external SGLang-Omni stage supports distributed weight "
+                    "updates but advertises no transport descriptor"
+                )
+            transports.append(transport)
+
+    if not transports:
+        raise RuntimeError("external SGLang-Omni has no distributed weight-update transport")
+    if any(transport != transports[0] for transport in transports[1:]):
+        raise RuntimeError(
+            f"external SGLang-Omni stages advertise inconsistent weight-update transports: {transports}"
+        )
+    return transports[0]
+
+
+def _validate_omni_server_info(model_info: dict, expect_server_args: dict) -> None:
+    """Validate the smaller model identity surface exposed by SGLang-Omni."""
+    if model_info.get("success") is not True:
+        raise RuntimeError(f"external SGLang-Omni model_info failed: {model_info}")
+
+    expected_model = str(expect_server_args["model_path"])
+    actual_model = model_info.get("model_path")
+    encoded_hf_model = f"models--{expected_model.replace('/', '--')}"
+    if not isinstance(actual_model, str) or not (actual_model == expected_model or encoded_hf_model in actual_model):
+        raise RuntimeError(f"external SGLang-Omni model mismatch: expected {expected_model!r}, got {actual_model!r}")
+
+    expected_tp_size = expect_server_args["tp_size"]
+    stage_tp_sizes = {
+        item.get("data", {}).get("tp_size")
+        for item in model_info.get("stages", [])
+        if isinstance(item, dict)
+        and isinstance(item.get("data"), dict)
+        and item.get("data", {}).get("tp_size") is not None
+    }
+    if stage_tp_sizes != {expected_tp_size}:
+        raise RuntimeError(
+            f"external SGLang-Omni TP mismatch: expected {expected_tp_size}, got {sorted(stage_tp_sizes)}"
+        )
+    if not isinstance(model_info.get("weight_version"), str) or not model_info["weight_version"]:
+        raise RuntimeError("external SGLang-Omni model_info has no weight_version")
+
+
 def get_base_gpu_id(args, rank):
     num_gpus = min(args.num_gpus_per_node, args.rollout_num_gpus_per_engine)
     if args.colocate:
@@ -192,6 +243,12 @@ class SGLangEngine(RayActor):
 
         def _get_actual_server_args():
             response = requests.get(f"http://{self.server_host}:{self.server_port}/get_server_info")
+            if response.status_code == 404:
+                response = requests.get(f"http://{self.server_host}:{self.server_port}/model_info")
+                response.raise_for_status()
+                self._omni_model_info = response.json()
+                _validate_omni_server_info(self._omni_model_info, expect_server_args)
+                return None
             response.raise_for_status()
             return response.json()
 
@@ -209,7 +266,8 @@ class SGLangEngine(RayActor):
             is_process_alive=lambda: True,
         )
         actual_server_args = _get_actual_server_args()
-        _sanity_check_server_args(actual_server_args, expect_server_args)
+        if actual_server_args is not None:
+            _sanity_check_server_args(actual_server_args, expect_server_args)
 
     def _init_normal(self, server_args_dict):
         logger.info(f"Launch HttpServerEngineAdapter at: {self.server_host}:{self.server_port}")
@@ -457,6 +515,12 @@ class SGLangEngine(RayActor):
             if response.status_code == 200:
                 return response.json()["weight_version"]
         response.raise_for_status()
+
+    def get_distributed_weight_update_transport(self):
+        model_info = getattr(self, "_omni_model_info", None)
+        if model_info is None:
+            return None
+        return _extract_omni_distributed_weight_update_transport(model_info)
 
     def unload_lora_adapter(self, lora_name: str):
         """Unload LoRA adapter."""

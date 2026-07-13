@@ -98,6 +98,14 @@ def create_placement_groups(args):
         if args.use_critic:
             num_gpus += args.critic_num_nodes * args.critic_num_gpus_per_node
             critic_offset = args.actor_num_nodes * args.actor_num_gpus_per_node
+    elif args.rollout_external:
+        # External servers own their GPUs outside this Ray cluster. Only reserve
+        # local bundles for trainable models; the HTTP proxy actors are CPU-only.
+        num_gpus = args.actor_num_nodes * args.actor_num_gpus_per_node
+        if args.use_critic:
+            critic_offset = num_gpus
+            num_gpus += args.critic_num_nodes * args.critic_num_gpus_per_node
+        rollout_offset = num_gpus
     else:
         num_gpus = args.actor_num_nodes * args.actor_num_gpus_per_node + args.rollout_num_gpus
         rollout_offset = args.actor_num_nodes * args.actor_num_gpus_per_node

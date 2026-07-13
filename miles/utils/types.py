@@ -1,9 +1,249 @@
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
 import numpy
 import torch
+
+
+def _check_dict_keys(data: dict, *, required: set[str], optional: set[str], type_name: str) -> None:
+    keys = set(data)
+    missing = required - keys
+    extra = keys - required - optional
+    if missing or extra:
+        raise ValueError(f"{type_name} fields mismatch; missing={sorted(missing)}, extra={sorted(extra)}")
+
+
+@dataclass
+class DiscreteActionStream:
+    """One aligned time-by-channel multi-discrete policy action stream."""
+
+    name: str
+    stage: str
+    modality: str
+    shape: list[int]
+    vocab_size: int
+    actions: list[list[int]]
+    policy_logprobs: list[list[float]]
+    action_mask: list[list[bool]]
+    channel_ids: list[int]
+    codec_content_mask: list[list[bool]] | None = None
+    action_type: str = "multi_discrete"
+    layout: str = "time_codebook"
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        for field_name, value in (
+            ("name", self.name),
+            ("stage", self.stage),
+            ("modality", self.modality),
+        ):
+            if not isinstance(value, str) or not value:
+                raise ValueError(f"{field_name} must be a nonempty string")
+        if self.action_type != "multi_discrete":
+            raise ValueError("action_type must be 'multi_discrete'")
+        if self.layout != "time_codebook":
+            raise ValueError("layout must be 'time_codebook'")
+        if not isinstance(self.shape, list) or len(self.shape) != 2 or any(type(x) is not int for x in self.shape):
+            raise ValueError("shape must be a two-element integer list [time, channels]")
+
+        length, channels = self.shape
+        if length < 0 or channels <= 0:
+            raise ValueError("action stream dimensions must be non-negative")
+        if type(self.vocab_size) is not int or self.vocab_size <= 0:
+            raise ValueError("vocab_size must be a positive integer")
+        if (
+            not isinstance(self.channel_ids, list)
+            or any(type(channel_id) is not int for channel_id in self.channel_ids)
+            or self.channel_ids != list(range(channels))
+        ):
+            raise ValueError("channel_ids must be the ordered channel indices")
+
+        matrices = {
+            "actions": self.actions,
+            "policy_logprobs": self.policy_logprobs,
+            "action_mask": self.action_mask,
+        }
+        if self.codec_content_mask is not None:
+            matrices["codec_content_mask"] = self.codec_content_mask
+        for matrix_name, matrix in matrices.items():
+            if not isinstance(matrix, list) or len(matrix) != length:
+                raise ValueError(f"{matrix_name} must have declared shape {self.shape}")
+            if any(not isinstance(row, list) or len(row) != channels for row in matrix):
+                raise ValueError(f"{matrix_name} must have declared shape {self.shape}")
+
+        for row in range(length):
+            for channel in range(channels):
+                action = self.actions[row][channel]
+                logprob = self.policy_logprobs[row][channel]
+                sampled = self.action_mask[row][channel]
+                if type(action) is not int or not 0 <= action < self.vocab_size:
+                    raise ValueError("action is outside the declared vocabulary")
+                if isinstance(logprob, bool) or not isinstance(logprob, (int, float)):
+                    raise ValueError("policy_logprobs must contain numeric values")
+                if type(sampled) is not bool:
+                    raise ValueError("action_mask must contain boolean values")
+                if sampled and not math.isfinite(logprob):
+                    raise ValueError("sampled action has a non-finite policy logprob")
+                if not sampled and logprob != 0.0:
+                    raise ValueError("forced action policy logprob must be zero")
+                if self.codec_content_mask is not None and type(self.codec_content_mask[row][channel]) is not bool:
+                    raise ValueError("codec_content_mask must contain boolean values")
+
+    def to_dict(self) -> dict[str, Any]:
+        self.validate()
+        return {
+            "name": self.name,
+            "stage": self.stage,
+            "modality": self.modality,
+            "action_type": self.action_type,
+            "layout": self.layout,
+            "shape": list(self.shape),
+            "vocab_size": self.vocab_size,
+            "actions": [list(row) for row in self.actions],
+            "policy_logprobs": [list(row) for row in self.policy_logprobs],
+            "action_mask": [list(row) for row in self.action_mask],
+            "codec_content_mask": (
+                [list(row) for row in self.codec_content_mask] if self.codec_content_mask is not None else None
+            ),
+            "channel_ids": list(self.channel_ids),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "DiscreteActionStream":
+        if not isinstance(data, dict):
+            raise ValueError("DiscreteActionStream must be constructed from a dictionary")
+        _check_dict_keys(
+            data,
+            required={
+                "name",
+                "stage",
+                "modality",
+                "action_type",
+                "layout",
+                "shape",
+                "vocab_size",
+                "actions",
+                "policy_logprobs",
+                "action_mask",
+                "channel_ids",
+            },
+            optional={"codec_content_mask"},
+            type_name="DiscreteActionStream",
+        )
+        return cls(
+            name=data["name"],
+            stage=data["stage"],
+            modality=data["modality"],
+            action_type=data["action_type"],
+            layout=data["layout"],
+            shape=data["shape"],
+            vocab_size=data["vocab_size"],
+            actions=data["actions"],
+            policy_logprobs=data["policy_logprobs"],
+            action_mask=data["action_mask"],
+            codec_content_mask=data.get("codec_content_mask"),
+            channel_ids=data["channel_ids"],
+        )
+
+
+@dataclass
+class RolloutActionTrace:
+    """Versioned collection of structured policy action streams."""
+
+    version: int
+    model_family: str
+    total_action_count: int
+    action_streams: list[DiscreteActionStream]
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        if type(self.version) is not int or self.version != 2:
+            raise ValueError("only rollout action trace version 2 is supported")
+        if not isinstance(self.model_family, str) or not self.model_family:
+            raise ValueError("model_family must be a nonempty string")
+        if type(self.total_action_count) is not int or self.total_action_count < 0:
+            raise ValueError("total_action_count must be a non-negative integer")
+        if not isinstance(self.action_streams, list) or not self.action_streams:
+            raise ValueError("action_streams must contain at least one stream")
+        if any(not isinstance(stream, DiscreteActionStream) for stream in self.action_streams):
+            raise ValueError("action_streams must contain DiscreteActionStream values")
+        for stream in self.action_streams:
+            stream.validate()
+        actual_count = sum(
+            int(sampled) for stream in self.action_streams for row in stream.action_mask for sampled in row
+        )
+        if actual_count != self.total_action_count:
+            raise ValueError("total_action_count does not match action masks")
+
+    def to_dict(self) -> dict[str, Any]:
+        self.validate()
+        return {
+            "version": self.version,
+            "model_family": self.model_family,
+            "total_action_count": self.total_action_count,
+            "action_streams": [stream.to_dict() for stream in self.action_streams],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "RolloutActionTrace":
+        if not isinstance(data, dict):
+            raise ValueError("RolloutActionTrace must be constructed from a dictionary")
+        _check_dict_keys(
+            data,
+            required={"version", "model_family", "total_action_count", "action_streams"},
+            optional=set(),
+            type_name="RolloutActionTrace",
+        )
+        if not isinstance(data["action_streams"], list):
+            raise ValueError("action_streams must be a list")
+        return cls(
+            version=data["version"],
+            model_family=data["model_family"],
+            total_action_count=data["total_action_count"],
+            action_streams=[DiscreteActionStream.from_dict(stream) for stream in data["action_streams"]],
+        )
+
+
+@dataclass
+class DecodedAudio:
+    """Decoded waveform returned for reward evaluation, not policy training."""
+
+    data: str
+    format: str
+    sample_rate: int
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        if not isinstance(self.data, str) or not self.data:
+            raise ValueError("decoded audio data must be a nonempty string")
+        if self.format != "wav":
+            raise ValueError("decoded audio format must be 'wav'")
+        if type(self.sample_rate) is not int or self.sample_rate <= 0:
+            raise ValueError("decoded audio sample_rate must be a positive integer")
+
+    def to_dict(self) -> dict[str, Any]:
+        self.validate()
+        return {"data": self.data, "format": self.format, "sample_rate": self.sample_rate}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "DecodedAudio":
+        if not isinstance(data, dict):
+            raise ValueError("DecodedAudio must be constructed from a dictionary")
+        _check_dict_keys(
+            data,
+            required={"data", "format", "sample_rate"},
+            optional=set(),
+            type_name="DecodedAudio",
+        )
+        return cls(data=data["data"], format=data["format"], sample_rate=data["sample_rate"])
 
 
 @dataclass
@@ -127,11 +367,17 @@ class Sample:
 
     prefix_cache_info: PrefixCacheInfo = field(default_factory=PrefixCacheInfo)
 
+    # Structured policy outputs are independent of the legacy text-token fields.
+    action_trace: RolloutActionTrace | None = None
+    decoded_audio: DecodedAudio | None = None
+
     def to_dict(self):
         value = self.__dict__.copy()
         value["status"] = self.status.value
         value["spec_info"] = self.spec_info.to_dict()
         value["prefix_cache_info"] = self.prefix_cache_info.to_dict()
+        value["action_trace"] = self.action_trace.to_dict() if self.action_trace is not None else None
+        value["decoded_audio"] = self.decoded_audio.to_dict() if self.decoded_audio is not None else None
         return value
 
     @staticmethod
@@ -140,6 +386,10 @@ class Sample:
         data["status"] = Sample.Status(data["status"])
         data["spec_info"] = Sample.SpecInfo.from_dict(data.get("spec_info", {}))
         data["prefix_cache_info"] = Sample.PrefixCacheInfo.from_dict(data.get("prefix_cache_info", {}))
+        if data.get("action_trace") is not None:
+            data["action_trace"] = RolloutActionTrace.from_dict(data["action_trace"])
+        if data.get("decoded_audio") is not None:
+            data["decoded_audio"] = DecodedAudio.from_dict(data["decoded_audio"])
 
         field_names = set(Sample.__dataclass_fields__.keys())
         init_data = {k: v for k, v in data.items() if k in field_names}
@@ -179,6 +429,10 @@ class Sample:
             assert (
                 len(self.opd_reverse_kl) == self.response_length
             ), f"opd_reverse_kl length ({len(self.opd_reverse_kl)}) != response_length ({self.response_length})"
+        if self.action_trace is not None:
+            self.action_trace.validate()
+        if self.decoded_audio is not None:
+            self.decoded_audio.validate()
         if self.rollout_routed_experts is not None:
             actual = len(self.rollout_routed_experts)
             expect = len(self.tokens) - 1
@@ -228,6 +482,8 @@ class Sample:
         self.loss_mask = None
         self.weight_versions = []
         self.rollout_log_probs = None
+        self.action_trace = None
+        self.decoded_audio = None
         self.rollout_routed_experts = None
         self.rollout_indexer_topk = None
         self.status = Sample.Status.ABORTED
@@ -280,7 +536,10 @@ class ParamInfo:
 # A dict-based batch produced along the rollout -> training path
 # In Megatron backend, several fields are converted to torch.Tensor lists on GPU
 # before being consumed by data iterators (see megatron_utils.actor._get_rollout_data).
-RolloutBatch = dict[str, list[torch.Tensor] | list[int] | list[float] | list[str]]
+RolloutBatch = dict[
+    str,
+    list[torch.Tensor] | list[int] | list[float] | list[str] | list[RolloutActionTrace],
+]
 
 
 @dataclass

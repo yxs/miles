@@ -11,7 +11,28 @@ from miles.ray.rollout.train_data_conversion import (
     convert_samples_to_train_data,
     split_train_data_by_dp,
 )
-from miles.utils.types import Sample
+from miles.utils.types import DecodedAudio, DiscreteActionStream, RolloutActionTrace, Sample
+
+
+def _make_action_trace(action: int) -> RolloutActionTrace:
+    return RolloutActionTrace(
+        version=2,
+        model_family="higgs_tts",
+        total_action_count=1,
+        action_streams=[
+            DiscreteActionStream(
+                name="higgs_codes",
+                stage="tts_engine",
+                modality="audio",
+                shape=[1, 1],
+                vocab_size=8,
+                actions=[[action]],
+                policy_logprobs=[[-0.5]],
+                action_mask=[[True]],
+                channel_ids=[0],
+            )
+        ],
+    )
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -173,6 +194,44 @@ class TestConvertSamplesToTrainData:
         )
         assert out["dynamic_global_batch_size"] == 16
 
+    def test_structured_action_traces_pass_through_without_decoded_audio(self):
+        args = make_args(rewards_normalization=False)
+        samples = [
+            make_sample(
+                response_length=0,
+                tokens=[10, 11],
+                action_trace=_make_action_trace(action),
+                decoded_audio=DecodedAudio(data="UklGRg==", format="wav", sample_rate=24000),
+            )
+            for action in (3, 4)
+        ]
+
+        out = convert_samples_to_train_data(
+            args,
+            samples,
+            metadata={},
+            custom_convert_samples_to_train_data_func=None,
+            custom_reward_post_process_func=None,
+        )
+
+        assert out["action_traces"] == [sample.action_trace for sample in samples]
+        assert "decoded_audio" not in out
+        assert "decoded_audios" not in out
+
+    def test_mixed_structured_and_text_batch_is_rejected(self):
+        args = make_args(rewards_normalization=False)
+        structured = make_sample(action_trace=_make_action_trace(3))
+        text = make_sample()
+
+        with pytest.raises(ValueError, match="cannot mix samples"):
+            convert_samples_to_train_data(
+                args,
+                [structured, text],
+                metadata={},
+                custom_convert_samples_to_train_data_func=None,
+                custom_reward_post_process_func=None,
+            )
+
 
 # ----------------------------- _post_process_rewards -----------------------------
 
@@ -215,6 +274,20 @@ class TestPostProcessRewards:
         import numpy as np
 
         assert abs(np.std(processed, ddof=1) - 1.0) < 1e-4
+
+    def test_grpo_identical_nonrepresentable_rewards_have_exactly_zero_advantage(self):
+        args = make_args(
+            advantage_estimator="grpo",
+            rewards_normalization=True,
+            grpo_std_normalization=True,
+            n_samples_per_prompt=8,
+            rollout_batch_size=1,
+        )
+        samples = make_samples_grouped(1, 8, rewards=[0.9] * 8)
+
+        _, processed = _post_process_rewards(args, samples, custom_reward_post_process_func=None)
+
+        assert processed == [0.0] * 8
 
     def test_gspo_uses_grpo_normalization_path(self):
         args = make_args(
@@ -436,6 +509,25 @@ class TestSplitTrainDataByDp:
         parts = [ray.get(r.inner) for r in refs]
         assert "rollout_log_probs" in parts[0]
         assert "round_number" in parts[0]
+
+    def test_action_traces_are_partitioned(self):
+        args = make_args(balance_data=False)
+        traces = [_make_action_trace(action) for action in (1, 2, 3, 4)]
+        data = {
+            "tokens": [[1], [2], [3], [4]],
+            "response_lengths": [0, 0, 0, 0],
+            "rewards": [0, 0, 0, 0],
+            "truncated": [0, 0, 0, 0],
+            "loss_masks": [[], [], [], []],
+            "sample_indices": [0, 1, 2, 3],
+            "action_traces": traces,
+        }
+
+        refs = split_train_data_by_dp(args, data, dp_size=2)
+        parts = [ray.get(r.inner) for r in refs]
+
+        assert parts[0]["action_traces"] == [traces[0], traces[2]]
+        assert parts[1]["action_traces"] == [traces[1], traces[3]]
 
     def test_shared_keys_not_split(self):
         """raw_reward, total_lengths, dynamic_global_batch_size are shared, not split."""

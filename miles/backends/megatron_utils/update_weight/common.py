@@ -175,6 +175,9 @@ def all_gather_param(args: Namespace, name: str, param: torch.nn.Parameter) -> t
         tp_size = get_parallel_state().tp.size
         tp_group = get_parallel_state().tp.group
 
+    if tp_size == 1:
+        return param.data
+
     param_partitions = [torch.empty_like(param.data) for _ in range(tp_size)]
     dist.all_gather(param_partitions, param.data, group=tp_group)
     partition_dim = param.partition_dim

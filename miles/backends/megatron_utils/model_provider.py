@@ -20,6 +20,9 @@ from megatron.training.arguments import core_transformer_config_from_args
 from miles.utils.misc import load_function
 from miles.utils.replay_base import routing_replay_manager
 
+from ..training_utils.higgs_policy import is_higgs_policy_enabled, validate_higgs_single_device_config
+from .higgs_model import build_higgs_megatron_model
+
 logger = logging.getLogger(__name__)
 
 
@@ -131,6 +134,14 @@ def get_model_provider_func(
     args: argparse.Namespace,
     role: Literal["actor", "critic"] = "actor",
 ):
+    higgs_policy = is_higgs_policy_enabled(args)
+    if higgs_policy:
+        validate_higgs_single_device_config(args)
+        if role != "actor":
+            raise ValueError("the initial Higgs structured policy path does not implement a critic")
+        if getattr(args, "custom_model_provider_path", None):
+            raise ValueError("Higgs structured policy owns its Megatron model provider")
+
     # Support custom model provider path (similar to --custom-rm-path for reward models)
     if getattr(args, "custom_model_provider_path", None):
 
@@ -159,6 +170,10 @@ def get_model_provider_func(
         return wrapped_model_provider
 
     if args.megatron_to_hf_mode == "bridge":
+        if higgs_policy:
+            raise ValueError(
+                "Higgs Megatron-Bridge loading is disabled until a checkpoint mapping passes server/trainer parity"
+            )
         from megatron.bridge import AutoBridge
 
         bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
@@ -313,7 +328,14 @@ def get_model_provider_func(
                 routing_replay_manager.enabled = True
 
         with build_model_context(**build_model_context_args):
-            model = GPTModel(**kwargs)
+            if higgs_policy:
+                model = build_higgs_megatron_model(
+                    gpt_model_kwargs=kwargs,
+                    num_codebooks=args.higgs_num_codebooks,
+                    codebook_vocab_size=args.higgs_codebook_vocab_size,
+                )
+            else:
+                model = GPTModel(**kwargs)
 
         if post_process and role == "critic":
             model.output_layer = LinearForLastLayer(input_size=config.hidden_size, output_size=1, config=config)

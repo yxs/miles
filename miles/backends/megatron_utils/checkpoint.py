@@ -1,8 +1,10 @@
 import logging
 import os
 import re
+from collections import Counter
 from pathlib import Path
 
+import torch
 import torch.distributed as dist
 
 # TODO: may need to copy those 2 functions and do refactoring.
@@ -97,23 +99,94 @@ logger = logging.getLogger(__name__)
 __all__ = ["save_checkpoint", "save_checkpoint_with_lora", "load_checkpoint"]
 
 
+def _normalize_torch_optimizer_steps_for_checkpoint_load(optimizer) -> None:
+    """Make disposable native-Adam load templates internally consistent."""
+
+    states = []
+    for wrapped_optimizer in getattr(optimizer, "chained_optimizers", (optimizer,)):
+        torch_optimizer = getattr(wrapped_optimizer, "optimizer", None)
+        if torch_optimizer is None:
+            continue
+        serialized_state = torch_optimizer.state_dict().get("state", {})
+        if not serialized_state:
+            initialize_states = getattr(wrapped_optimizer, "_init_optimizer_states_with_dummy_values", None)
+            if initialize_states is not None:
+                logger.info("Initializing temporary native optimizer state for Higgs checkpoint load")
+                initialize_states()
+                serialized_state = torch_optimizer.state_dict().get("state", {})
+        states.extend(state for state in serialized_state.values() if "step" in state)
+
+    step_counts = Counter(float(state["step"].item()) for state in states)
+    if len(step_counts) <= 1:
+        return
+
+    logger.warning(
+        "Normalizing divergent temporary Torch optimizer steps before Higgs checkpoint load: %s",
+        dict(sorted(step_counts.items())),
+    )
+    for state in states:
+        step = state["step"]
+        if isinstance(step, torch.Tensor):
+            step.zero_()
+        else:
+            state["step"] = 0
+
+
+def _load_higgs_megatron_checkpoint_with_consistent_optimizer_steps(checkpoint_optimizer, **load_kwargs):
+    """Normalize native-Adam template steps at the point Megatron materializes them."""
+
+    patched_state_dicts = []
+    for wrapped_optimizer in getattr(checkpoint_optimizer, "chained_optimizers", (checkpoint_optimizer,)):
+        original_state_dict = wrapped_optimizer.state_dict
+
+        def state_dict(_optimizer=wrapped_optimizer, _original=original_state_dict):
+            _normalize_torch_optimizer_steps_for_checkpoint_load(_optimizer)
+            return _original()
+
+        patched_state_dicts.append((wrapped_optimizer, original_state_dict))
+        wrapped_optimizer.state_dict = state_dict
+    try:
+        return _load_checkpoint_megatron(**load_kwargs)
+    finally:
+        for wrapped_optimizer, original_state_dict in patched_state_dicts:
+            wrapped_optimizer.state_dict = original_state_dict
+
+
 def load_checkpoint(ddp_model, optimizer, opt_param_scheduler, checkpointing_context, skip_load_to_model_and_opt):
     # ref: how megatron `load_checkpoint` gets directory
     args = get_args()
     load_path = args.load
+
+    from miles.backends.training_utils.higgs_policy import is_higgs_policy_enabled
+
+    if is_higgs_policy_enabled(args):
+        from .higgs_checkpoint import resolve_higgs_checkpoint_path
+
+        load_path = str(resolve_higgs_checkpoint_path(load_path))
+        args.load = load_path
 
     assert Path(load_path).exists() and _is_dir_nonempty(
         load_path
     ), f"{args.load=} does not exist or is an empty directory. Did you specify the wrong folder?"
 
     if _is_megatron_checkpoint(load_path):
-        result = _load_checkpoint_megatron(
-            ddp_model=ddp_model,
-            optimizer=optimizer,
-            opt_param_scheduler=opt_param_scheduler,
-            checkpointing_context=checkpointing_context,
-            skip_load_to_model_and_opt=skip_load_to_model_and_opt,
-        )
+        if is_higgs_policy_enabled(args) and optimizer is not None:
+            result = _load_higgs_megatron_checkpoint_with_consistent_optimizer_steps(
+                optimizer,
+                ddp_model=ddp_model,
+                optimizer=optimizer,
+                opt_param_scheduler=opt_param_scheduler,
+                checkpointing_context=checkpointing_context,
+                skip_load_to_model_and_opt=skip_load_to_model_and_opt,
+            )
+        else:
+            result = _load_checkpoint_megatron(
+                ddp_model=ddp_model,
+                optimizer=optimizer,
+                opt_param_scheduler=opt_param_scheduler,
+                checkpointing_context=checkpointing_context,
+                skip_load_to_model_and_opt=skip_load_to_model_and_opt,
+            )
     else:
         result = _load_checkpoint_hf(
             ddp_model=ddp_model,
@@ -172,14 +245,36 @@ def _is_megatron_checkpoint(path: str | Path) -> bool:
 
 
 def _load_checkpoint_hf(ddp_model, optimizer, args, load_path: str):
-    assert args.megatron_to_hf_mode == "bridge", "Only bridge mode is supported for loading HF checkpoint"
-    from megatron.bridge import AutoBridge
+    from miles.backends.training_utils.higgs_policy import is_higgs_policy_enabled, validate_higgs_single_device_config
 
     logger.info(f"Load checkpoint from HuggingFace model into Megatron (path={load_path})")
 
-    with megatron_bridge_utils.patch_megatron_model(ddp_model):
-        bridge = AutoBridge.from_hf_pretrained(load_path, trust_remote_code=True)
-        bridge.load_hf_weights(ddp_model)
+    if is_higgs_policy_enabled(args):
+        from megatron.core.utils import unwrap_model
+
+        from .higgs_checkpoint import HIGGS_TEXT_VOCAB_SIZE, load_higgs_policy_checkpoint
+
+        validate_higgs_single_device_config(args)
+        if args.megatron_to_hf_mode != "raw":
+            raise ValueError("Higgs HF loading requires megatron_to_hf_mode='raw'")
+        if args.vocab_size != HIGGS_TEXT_VOCAB_SIZE or args.padded_vocab_size != HIGGS_TEXT_VOCAB_SIZE:
+            raise ValueError(
+                "Higgs HF loading requires vocab_size=padded_vocab_size="
+                f"{HIGGS_TEXT_VOCAB_SIZE}, got vocab_size={args.vocab_size!r} "
+                f"and padded_vocab_size={args.padded_vocab_size!r}"
+            )
+        unwrapped_model = unwrap_model(ddp_model)
+        if len(unwrapped_model) != 1:
+            raise ValueError("the initial Higgs raw loader requires exactly one Megatron model chunk")
+        load_higgs_policy_checkpoint(unwrapped_model[0], load_path)
+    else:
+        if args.megatron_to_hf_mode != "bridge":
+            raise ValueError("only bridge mode is supported for loading a generic HF checkpoint")
+        from megatron.bridge import AutoBridge
+
+        with megatron_bridge_utils.patch_megatron_model(ddp_model):
+            bridge = AutoBridge.from_hf_pretrained(load_path, trust_remote_code=True)
+            bridge.load_hf_weights(ddp_model)
 
     # Copied from Megatron-core :: load_checkpoint (with simplifications)
     if (args.fp16 or args.bf16) and optimizer is not None:

@@ -9,8 +9,13 @@ from argparse import Namespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+import torch
 
-from miles.backends.megatron_utils.checkpoint import _is_megatron_checkpoint, save_checkpoint_with_lora
+from miles.backends.megatron_utils.checkpoint import (
+    _is_megatron_checkpoint,
+    _normalize_torch_optimizer_steps_for_checkpoint_load,
+    save_checkpoint_with_lora,
+)
 
 # ---------------------------------------------------------------------------
 # _is_megatron_checkpoint
@@ -61,6 +66,41 @@ class TestIsMegatronCheckpoint:
         d = tmp_path / name
         d.mkdir()
         assert _is_megatron_checkpoint(d) is False
+
+
+def test_higgs_resume_normalizes_only_divergent_temporary_optimizer_steps():
+    torch_optimizer = MagicMock()
+    torch_optimizer.state = {
+        "first": {"step": torch.tensor(0.0)},
+        "second": {"step": torch.tensor(1.0)},
+        "uninitialized": {},
+    }
+    torch_optimizer.state_dict.return_value = {"state": torch_optimizer.state}
+    optimizer = MagicMock()
+    optimizer.chained_optimizers = [Namespace(optimizer=torch_optimizer)]
+
+    _normalize_torch_optimizer_steps_for_checkpoint_load(optimizer)
+
+    assert torch_optimizer.state["first"]["step"].item() == 0
+    assert torch_optimizer.state["second"]["step"].item() == 0
+    assert torch_optimizer.state["uninitialized"] == {}
+
+
+def test_higgs_resume_initializes_an_empty_temporary_optimizer_state():
+    torch_optimizer = MagicMock()
+    torch_optimizer.state_dict.return_value = {"state": {}}
+    wrapped_optimizer = Namespace(optimizer=torch_optimizer)
+
+    def initialize_states():
+        torch_optimizer.state_dict.return_value = {"state": {"first": {"step": torch.tensor(1.0)}}}
+
+    wrapped_optimizer._init_optimizer_states_with_dummy_values = initialize_states
+    optimizer = MagicMock()
+    optimizer.chained_optimizers = [wrapped_optimizer]
+
+    _normalize_torch_optimizer_steps_for_checkpoint_load(optimizer)
+
+    assert torch_optimizer.state_dict.call_count == 2
 
 
 # ---------------------------------------------------------------------------

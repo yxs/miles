@@ -1,3 +1,4 @@
+import os
 import socket
 import time
 from argparse import Namespace
@@ -16,6 +17,42 @@ from miles.utils.distributed_utils import init_process_group
 from miles.utils.lora import LORA_ADAPTER_NAME
 from ..common import _check_weight_sync_results
 from .mixin import DistBucketedWeightUpdateMixin
+
+
+def _nccl_version_string() -> str:
+    version = torch.cuda.nccl.version()
+    if isinstance(version, tuple):
+        return ".".join(str(part) for part in version)
+    return str(version)
+
+
+def _validate_distributed_weight_update_transports(
+    engine_transports: Sequence[dict | None],
+) -> None:
+    advertised = [transport for transport in engine_transports if transport is not None]
+    if not advertised:
+        return
+    if len(advertised) != len(engine_transports):
+        raise RuntimeError(
+            "cannot create one NCCL weight-update group from inference engines "
+            "with mixed advertised and legacy transport contracts"
+        )
+
+    trainer_transport = {
+        "protocol_version": 1,
+        "backend": "nccl",
+        "nccl_version": _nccl_version_string(),
+        "nccl_cumem_enable": os.environ.get("NCCL_CUMEM_ENABLE", "default"),
+    }
+    for index, engine_transport in enumerate(advertised):
+        if engine_transport != trainer_transport:
+            raise RuntimeError(
+                "distributed weight-update transport mismatch before NCCL "
+                f"rendezvous: trainer={trainer_transport}, "
+                f"inference_engine[{index}]={engine_transport}. Launch both "
+                "processes with the same NCCL version and "
+                "NCCL_CUMEM_ENABLE setting."
+            )
 
 
 class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
@@ -78,6 +115,17 @@ class UpdateWeightFromDistributed(DistBucketedWeightUpdateMixin):
             self._model_update_groups = connect_rollout_engines_from_distributed(
                 self.args, self._group_name, rollout_engines
             )
+
+    def disconnect_rollout_engines(self) -> None:
+        if not self._is_source or self._model_update_groups is None:
+            return
+        disconnect_rollout_engines_from_distributed(
+            self.args,
+            self._group_name,
+            self._model_update_groups,
+            self.rollout_engines,
+        )
+        self._model_update_groups = None
 
     @property
     def _is_source(self):
@@ -159,6 +207,10 @@ def connect_rollout_engines_from_distributed(
     """
     if engine_gpu_counts is None:
         engine_gpu_counts = [args.rollout_num_gpus_per_engine] * len(rollout_engines)
+    engine_transports = ray.get(
+        [engine.get_distributed_weight_update_transport.remote() for engine in rollout_engines]
+    )
+    _validate_distributed_weight_update_transports(engine_transports)
     master_address = ray._private.services.get_node_ip_address()
     with socket.socket() as sock:
         sock.bind(("", 0))
@@ -209,6 +261,11 @@ def update_weights_from_distributed(
     """
     Send metadata (Ray), broadcast tensors (NCCL rank 0 → engines).
     """
+    # HF conversion commonly returns split or permuted views. NCCL collectives
+    # require dense tensors, and the receiver allocates from these exact shapes.
+    converted_named_tensors = [
+        (name, tensor if tensor.is_contiguous() else tensor.contiguous()) for name, tensor in converted_named_tensors
+    ]
     refs = [
         engine.update_weights_from_distributed.remote(
             names=[name for name, _ in converted_named_tensors],
@@ -220,10 +277,20 @@ def update_weights_from_distributed(
         for engine in rollout_engines
     ]
 
-    handles = []
-    for _, param in converted_named_tensors:
-        handles.append(dist.broadcast(param.data, 0, group=group, async_op=True))
-    for handle in handles:
-        handle.wait()
+    for name, param in converted_named_tensors:
+        # Keep only one NCCL collective in flight. Some large dense models have
+        # hundreds of exported tensors, and enqueueing the complete update at
+        # once can fail before the receiver drains the first broadcast.
+        try:
+            dist.broadcast(param.data, 0, group=group)
+        except Exception as error:
+            if hasattr(error, "add_note"):
+                error.add_note(
+                    "weight broadcast failed for "
+                    f"{name!r}: shape={tuple(param.shape)}, dtype={param.dtype}, "
+                    f"device={param.device}, stride={param.stride()}, "
+                    f"contiguous={param.is_contiguous()}"
+                )
+            raise
 
     return refs

@@ -39,6 +39,16 @@ def convert_samples_to_train_data(
         "sample_indices": [sample.index for sample in samples],
     }
 
+    trace_presence = [sample.action_trace is not None for sample in samples]
+    if any(trace_presence) and not all(trace_presence):
+        raise ValueError("cannot mix samples with and without structured action traces")
+    if trace_presence and all(trace_presence):
+        action_traces = []
+        for sample in samples:
+            sample.action_trace.validate()
+            action_traces.append(sample.action_trace)
+        train_data["action_traces"] = action_traces
+
     # loss mask
     # TODO: compress the loss mask
     loss_masks = []
@@ -103,7 +113,10 @@ def _post_process_rewards(args, samples: list[Sample] | list[list[Sample]], cust
     raw_rewards = [sample.get_reward_value(args) for sample in samples]
     if args.advantage_estimator in ["grpo", "gspo", "reinforce_plus_plus_baseline"] and args.rewards_normalization:
         # group norm
-        rewards = torch.tensor(raw_rewards, dtype=torch.float)
+        # Center in float64. Float32 reduction can move the mean of an identical
+        # non-representable reward (for example, eight 0.9 values) by one ULP,
+        # which the GRPO epsilon then amplifies into a spurious policy signal.
+        rewards = torch.tensor(raw_rewards, dtype=torch.float64)
         if rewards.shape[-1] == args.n_samples_per_prompt * args.rollout_batch_size:
             rewards = rewards.reshape(-1, args.n_samples_per_prompt)
         else:
@@ -152,6 +165,7 @@ def split_train_data_by_dp(args, data, dp_size):
             "round_number",
             "sample_indices",
             "rollout_log_probs",
+            "action_traces",
             "rollout_routed_experts",
             "rollout_indexer_topk",
             "prompt",

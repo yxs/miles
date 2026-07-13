@@ -28,6 +28,11 @@ from miles.utils.types import RolloutBatch
 from ...utils.profile_utils import TrainProfiler
 from ...utils.tensor_backper import TensorBackuper
 from ..training_utils.data import DataIterator, get_data_iterator, get_rollout_data, sync_actor_critic_data
+from ..training_utils.higgs_policy import (
+    is_higgs_policy_enabled,
+    validate_higgs_logprob_parity,
+    validate_higgs_weight_versions,
+)
 from ..training_utils.log_utils import log_cpu_memory, log_perf_data, log_rollout_data
 from ..training_utils.loss import compute_advantages_and_returns, get_log_probs_and_entropy, get_values
 from ..training_utils.parallel import get_parallel_state
@@ -39,9 +44,6 @@ from .model import forward_only, initialize_model_and_optimizer, save, train
 from .parallel import verify_megatron_parallel_state
 from .replay_utils import register_replay_list_moe
 from .update_weight.common import named_params_and_buffers
-from .update_weight.update_weight_from_distributed.broadcast import UpdateWeightFromDistributed
-from .update_weight.update_weight_from_distributed.p2p import UpdateWeightP2P
-from .update_weight.update_weight_from_tensor import UpdateWeightFromTensor
 
 if TYPE_CHECKING:
     from miles.ray.rollout.rollout_manager import EnginesAndLock
@@ -173,9 +175,13 @@ class MegatronTrainRayActor(TrainRayActor):
             self.args.vocab_size = self.tokenizer.vocab_size
 
         if self.args.colocate:
+            from .update_weight.update_weight_from_tensor import UpdateWeightFromTensor
+
             update_weight_cls = UpdateWeightFromTensor
         else:
             if self.args.update_weight_transfer_mode == "broadcast":
+                from .update_weight.update_weight_from_distributed.broadcast import UpdateWeightFromDistributed
+
                 update_weight_cls = UpdateWeightFromDistributed
             elif self.args.update_weight_transfer_mode == "disk-delta":
                 # Lazy import: keeps the delta deps (numpy/zstandard/xxhash) off the other paths.
@@ -183,6 +189,8 @@ class MegatronTrainRayActor(TrainRayActor):
 
                 update_weight_cls = UpdateWeightFromDiskDelta
             else:
+                from .update_weight.update_weight_from_distributed.p2p import UpdateWeightP2P
+
                 update_weight_cls = UpdateWeightP2P
         self.weight_updater = update_weight_cls(
             self.args,
@@ -322,6 +330,12 @@ class MegatronTrainRayActor(TrainRayActor):
         return getattr(self.args, f"use_rollout_{m.name}_replay", False)
 
     def train_actor(self, rollout_id: int, rollout_data: RolloutBatch) -> None:
+        higgs_policy = is_higgs_policy_enabled(self.args)
+        if higgs_policy:
+            validate_higgs_weight_versions(
+                rollout_data.get("weight_versions"),
+                trainer_weight_version=self.weight_updater.weight_version,
+            )
         # Create data iterator for log_probs and train.
         data_iterator, num_microbatches = get_data_iterator(self.args, self.model, rollout_data)
 
@@ -364,7 +378,7 @@ class MegatronTrainRayActor(TrainRayActor):
                         )
                     )
                 self._switch_model("old_actor" if self.args.keep_old_actor else "actor")
-                if not self.args.use_rollout_logprobs or self.args.get_mismatch_metrics:
+                if higgs_policy or not self.args.use_rollout_logprobs or self.args.get_mismatch_metrics:
                     for m in all_replay_managers:
                         if m.enabled:
                             if self._use_rollout_replay(m):
@@ -381,6 +395,25 @@ class MegatronTrainRayActor(TrainRayActor):
                     for m in all_replay_managers:
                         if self._use_rollout_replay(m):
                             m.clear_all_forward()
+                    if higgs_policy:
+                        parity = validate_higgs_logprob_parity(
+                            rollout_data["action_traces"],
+                            rollout_data["log_probs"],
+                            atol=self.args.higgs_logprob_parity_atol,
+                        )
+                        log = logger.info if parity["within_tolerance"] else logger.warning
+                        log(
+                            "Higgs pre-optimizer joint-logprob parity %s: "
+                            "max_abs_diff=%.6g mean_abs_diff=%.6g warning_atol=%.6g",
+                            (
+                                "within measured tolerance"
+                                if parity["within_tolerance"]
+                                else "exceeded measured tolerance"
+                            ),
+                            parity["max_abs_diff"],
+                            parity["mean_abs_diff"],
+                            self.args.higgs_logprob_parity_atol,
+                        )
 
                 if self.args.use_critic:
                     sync_actor_critic_data(
@@ -465,6 +498,12 @@ class MegatronTrainRayActor(TrainRayActor):
 
         if self.args.offload_train:
             destroy_process_groups()
+
+    @timer
+    def disconnect_rollout_engines(self) -> None:
+        disconnect = getattr(self.weight_updater, "disconnect_rollout_engines", None)
+        if disconnect is not None:
+            disconnect()
 
     @timer
     def update_weights(self, info: "EnginesAndLock") -> None:

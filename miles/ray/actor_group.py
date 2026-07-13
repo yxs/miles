@@ -8,6 +8,25 @@ from ray.util.scheduling_strategies import PlacementGroupSchedulingStrategy
 from miles.ray.utils import NOSET_VISIBLE_DEVICES_ENV_VARS_LIST
 
 
+def _build_train_actor_env_vars(train_env_vars: dict[str, str]) -> dict[str, str]:
+    env_vars = {
+        "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
+        # DeepEP/NVSHMEM's internal NCCL conflicts with our NCCL and hangs under CUDA graphs.
+        "NVSHMEM_DISABLE_NCCL": os.environ.get("NVSHMEM_DISABLE_NCCL", "1"),
+        **{name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST},
+    }
+
+    # Both ranks of a custom NCCL communicator must use the same memory
+    # registration mode. Preserve an explicit operator choice, but do not
+    # invent one for training actors when an external rollout server may use
+    # NCCL's default.
+    if "NCCL_CUMEM_ENABLE" in os.environ:
+        env_vars["NCCL_CUMEM_ENABLE"] = os.environ["NCCL_CUMEM_ENABLE"]
+
+    env_vars.update(train_env_vars)
+    return env_vars
+
+
 class RayTrainGroup:
     """
     A group of ray actors
@@ -51,16 +70,7 @@ class RayTrainGroup:
         assert pg is not None
         pg, reordered_bundle_indices, _reordered_gpu_ids = pg
 
-        env_vars = {
-            # because sglang will always set NCCL_CUMEM_ENABLE to 0
-            # we need also set it to 0 to prevent nccl error.
-            "NCCL_CUMEM_ENABLE": os.environ.get("NCCL_CUMEM_ENABLE", "0"),
-            "NVTE_FP8_BLOCK_SCALING_FP32_SCALES": "1",
-            # DeepEP/NVSHMEM's internal NCCL conflicts with our NCCL and hangs under CUDA graphs.
-            "NVSHMEM_DISABLE_NCCL": os.environ.get("NVSHMEM_DISABLE_NCCL", "1"),
-            **{name: "1" for name in NOSET_VISIBLE_DEVICES_ENV_VARS_LIST},
-            **self.args.train_env_vars,
-        }
+        env_vars = _build_train_actor_env_vars(self.args.train_env_vars)
 
         if source_patcher_config := self.args.dumper_source_patcher_config_train:
             env_vars["DUMPER_SOURCE_PATCHER_CONFIG"] = source_patcher_config
@@ -136,6 +146,11 @@ class RayTrainGroup:
         info = await self.rollout_manager.get_updatable_engines_and_lock.remote()
 
         await self._broadcast("update_weights", info=info)
+
+    async def disconnect_rollout_engines(self):
+        if self.args.train_backend != "megatron" or self.args.debug_train_only or self.args.debug_rollout_only:
+            return
+        await self._broadcast("disconnect_rollout_engines")
 
     async def onload(self):
         await self._broadcast("wake_up")

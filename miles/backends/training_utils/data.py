@@ -13,6 +13,12 @@ from miles.utils.types import RolloutBatch
 from ...utils.data import process_rollout_data
 from ...utils.ray_utils import Box
 from .cp_utils import slice_log_prob_with_cp, slice_with_cp
+from .higgs_policy import (
+    HiggsPolicyBatch,
+    collate_higgs_policy_batch,
+    is_higgs_policy_enabled,
+    validate_higgs_single_device_config,
+)
 from .mm_data import expand_multimodal_rollout_data_in_place
 from .parallel import get_parallel_state
 
@@ -38,6 +44,15 @@ def get_rollout_data(args: Namespace, rollout_data_ref: Box) -> RolloutBatch:
         parallel_state.intra_dp.rank,
         parallel_state.intra_dp.size,
     )
+    has_action_traces = "action_traces" in rollout_data
+    if has_action_traces != is_higgs_policy_enabled(args):
+        raise ValueError(
+            "structured Higgs action traces and --structured-policy-model-family=higgs_tts must be enabled together"
+        )
+    if has_action_traces:
+        validate_higgs_single_device_config(args, data_parallel_size=parallel_state.intra_dp.size)
+        for trace in rollout_data["action_traces"]:
+            trace.validate()
     # move tokens to GPU in advance
     rollout_data["tokens"] = [
         torch.tensor(t, dtype=torch.long, device=torch.cuda.current_device()) for t in rollout_data["tokens"]
@@ -98,6 +113,51 @@ def get_rollout_data(args: Namespace, rollout_data_ref: Box) -> RolloutBatch:
     if "rollout_indexer_topk" in rollout_data:
         rollout_data["rollout_indexer_topk"] = [torch.from_numpy(r) for r in rollout_data["rollout_indexer_topk"]]
     return rollout_data
+
+
+def get_higgs_batch(
+    data_iterator: "DataIterator",
+    args: Namespace,
+    *,
+    require_advantages: bool,
+) -> HiggsPolicyBatch:
+    """Fetch and collate one structured Higgs microbatch."""
+
+    validate_higgs_single_device_config(args, data_parallel_size=get_parallel_state().intra_dp.size)
+    keys = ["tokens", "action_traces", "advantages"]
+    if require_advantages:
+        keys.append("log_probs")
+    raw_batch = data_iterator.get_next(keys)
+    if raw_batch["tokens"] is None or raw_batch["action_traces"] is None:
+        raise ValueError("Higgs microbatches require prompt tokens and typed action traces")
+    advantages = raw_batch["advantages"]
+    if require_advantages and advantages is None:
+        raise ValueError("Higgs training microbatches require GRPO advantages")
+    old_policy_joint_logprobs = raw_batch.get("log_probs")
+    if require_advantages and old_policy_joint_logprobs is None:
+        raise ValueError("Higgs training requires pre-update Megatron joint logprobs")
+    device = raw_batch["tokens"][0].device
+    batch = collate_higgs_policy_batch(
+        raw_batch["tokens"],
+        raw_batch["action_traces"],
+        advantages=advantages,
+        old_policy_joint_logprobs=old_policy_joint_logprobs,
+        device=device,
+    )
+    if batch.num_codebooks != args.higgs_num_codebooks:
+        raise ValueError(
+            f"Higgs rollout has {batch.num_codebooks} codebooks, model expects {args.higgs_num_codebooks}"
+        )
+    if batch.codebook_vocab_size != args.higgs_codebook_vocab_size:
+        raise ValueError(
+            "Higgs rollout codebook vocabulary "
+            f"{batch.codebook_vocab_size} does not match model {args.higgs_codebook_vocab_size}"
+        )
+    if batch.input_ids.shape[1] > args.seq_length:
+        raise ValueError(
+            f"Higgs teacher-forcing sequence length {batch.input_ids.shape[1]} exceeds --seq-length={args.seq_length}"
+        )
+    return batch
 
 
 def get_batch(
@@ -381,6 +441,8 @@ def get_data_iterator(
     parallel_state = get_parallel_state()
     dp_size = parallel_state.intra_dp.size
     dp_group = parallel_state.intra_dp.group
+    if "action_traces" in rollout_data:
+        validate_higgs_single_device_config(args, data_parallel_size=dp_size)
     vpp_size = parallel_state.vpp_size
     microbatch_group_size_per_vp_stage = parallel_state.microbatch_group_size_per_vp_stage
 

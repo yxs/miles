@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
+from miles.backends.sglang_utils.arguments import validate_args as validate_sglang_args
 from miles.utils.arguments import _maybe_apply_dumper_overrides, get_miles_extra_args_provider
 from miles.utils.misc import function_registry
 
@@ -141,3 +142,24 @@ def test_recompute_logprobs_via_prefill_flag_is_parsed():
     args = parser.parse_args(["--recompute-logprobs-via-prefill"] + REQUIRED_ARGS)
 
     assert args.recompute_logprobs_via_prefill is True
+
+
+def test_sglang_parallelism_long_form_cli_fields_are_normalized() -> None:
+    args = SimpleNamespace(
+        rollout_num_gpus_per_engine=2,
+        sglang_data_parallel_size=3,
+        sglang_pipeline_parallel_size=4,
+        sglang_expert_parallel_size=5,
+        sglang_enable_dp_attention=True,
+        true_on_policy_mode=False,
+        recompute_logprobs_via_prefill=False,
+        sglang_router_policy=None,
+        sglang_router_ip=None,
+    )
+
+    validate_sglang_args(args)
+
+    assert args.sglang_tp_size == 2
+    assert args.sglang_dp_size == 3
+    assert args.sglang_pp_size == 4
+    assert args.sglang_ep_size == 5

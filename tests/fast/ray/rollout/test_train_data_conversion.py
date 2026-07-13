@@ -275,6 +275,20 @@ class TestPostProcessRewards:
 
         assert abs(np.std(processed, ddof=1) - 1.0) < 1e-4
 
+    def test_grpo_identical_nonrepresentable_rewards_have_exactly_zero_advantage(self):
+        args = make_args(
+            advantage_estimator="grpo",
+            rewards_normalization=True,
+            grpo_std_normalization=True,
+            n_samples_per_prompt=8,
+            rollout_batch_size=1,
+        )
+        samples = make_samples_grouped(1, 8, rewards=[0.9] * 8)
+
+        _, processed = _post_process_rewards(args, samples, custom_reward_post_process_func=None)
+
+        assert processed == [0.0] * 8
+
     def test_gspo_uses_grpo_normalization_path(self):
         args = make_args(
             advantage_estimator="gspo",

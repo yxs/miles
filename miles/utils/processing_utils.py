@@ -5,9 +5,11 @@ import logging
 import os
 from pathlib import Path
 
+import torch
 from huggingface_hub import hf_hub_download
+from qwen_omni_utils import process_mm_info
 from tokenizers import Tokenizer as RawTokenizer
-from transformers import AutoProcessor, AutoTokenizer, PreTrainedTokenizerBase, ProcessorMixin
+from transformers import AutoProcessor, AutoTokenizer, PreTrainedTokenizerBase, ProcessorMixin, Qwen3OmniMoeProcessor
 
 from miles.utils.hf_config import register_hf_config_aliases
 
@@ -139,19 +141,11 @@ def call_processor(processor, text, multimodal_inputs: dict | None = None):
 
 def extract_multimodal_train_inputs(processor_output):
     """Normalize processor kwargs to the tensor-only Megatron contract."""
-    import torch
-
-    result = {}
-    for name, value in processor_output.items():
-        if name in ("input_ids", "attention_mask"):
-            continue
-        if not isinstance(value, torch.Tensor):
-            try:
-                value = torch.as_tensor(value)
-            except (TypeError, ValueError, RuntimeError) as exc:
-                raise TypeError(f"processor output {name!r} cannot be converted to a tensor") from exc
-        result[name] = value
-    return result or None
+    return {
+        name: torch.as_tensor(value)
+        for name, value in processor_output.items()
+        if name not in ("input_ids", "attention_mask")
+    } or None
 
 
 def load_processor(name_or_path: str, **kwargs):
@@ -170,14 +164,11 @@ def load_processor(name_or_path: str, **kwargs):
 
 def process_vision_info(prompt, processor):
     # TODO: temporary solution, will write image utils for miles later
-    if getattr(processor, "audio_token", None) is not None:
-        from qwen_omni_utils import process_mm_info
-
-        image_patch_size = getattr(processor.image_processor, "patch_size", DEFAULT_PATCH_SIZE)
+    if isinstance(processor, Qwen3OmniMoeProcessor):
         audios, images, videos = process_mm_info(
             prompt,
             use_audio_in_video=False,
-            image_patch_size=image_patch_size,
+            image_patch_size=processor.image_processor.patch_size,
         )
         return {"audio": audios, "images": images, "videos": videos}
 

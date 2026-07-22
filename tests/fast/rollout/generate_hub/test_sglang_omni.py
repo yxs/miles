@@ -2,7 +2,6 @@ import asyncio
 import base64
 from types import SimpleNamespace
 
-import pytest
 import torch
 
 from miles.rollout.generate_utils.generate_endpoint_utils import serialize_multimodal_train_inputs
@@ -35,7 +34,6 @@ def test_serialize_audio_video_processor_tensors():
 def test_qwen_omni_media_extraction_and_tensor_normalization(monkeypatch):
     from miles.utils import processing_utils
 
-    qwen_omni_utils = pytest.importorskip("qwen_omni_utils")
     prompt = [{"role": "user", "content": [{"type": "audio", "audio": "a.wav"}]}]
     captured = {}
 
@@ -43,8 +41,9 @@ def test_qwen_omni_media_extraction_and_tensor_normalization(monkeypatch):
         captured["conversations"], captured["kwargs"] = conversations, kwargs
         return ["audio samples"], ["image"], ["video frames"]
 
-    monkeypatch.setattr(qwen_omni_utils, "process_mm_info", fake_process_mm_info)
-    processor = SimpleNamespace(audio_token="<audio>", image_processor=SimpleNamespace(patch_size=16))
+    monkeypatch.setattr(processing_utils, "process_mm_info", fake_process_mm_info)
+    processor = object.__new__(processing_utils.Qwen3OmniMoeProcessor)
+    processor.image_processor = SimpleNamespace(patch_size=16)
 
     media = processing_utils.process_vision_info(prompt, processor)
     train_inputs = processing_utils.extract_multimodal_train_inputs(

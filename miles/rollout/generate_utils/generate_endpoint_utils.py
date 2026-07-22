@@ -19,52 +19,14 @@ from miles.utils.processing_utils import (
 from miles.utils.types import Sample
 
 
-_MULTIMODAL_TENSOR_DTYPES = {
-    "bool",
-    "uint8",
-    "int8",
-    "int16",
-    "int32",
-    "int64",
-    "float16",
-    "bfloat16",
-    "float32",
-    "float64",
-}
-_SGLANG_OMNI_MULTIMODAL_TENSOR_NAMES = frozenset(
-    {
-        "pixel_values",
-        "image_grid_thw",
-        "input_features",
-        "feature_attention_mask",
-        "audio_feature_lengths",
-        "pixel_values_videos",
-        "video_grid_thw",
-        "video_second_per_grid",
-    }
-)
-
-
 def serialize_multimodal_train_inputs(
-    multimodal_train_inputs: dict[str, Any],
+    multimodal_train_inputs: dict[str, torch.Tensor],
 ) -> dict[str, Any]:
     """Encode the processor tensor kwargs shared with SGLang Omni."""
-    if not multimodal_train_inputs:
-        raise ValueError("multimodal_train_inputs must not be empty")
-    unknown = sorted(set(multimodal_train_inputs) - _SGLANG_OMNI_MULTIMODAL_TENSOR_NAMES)
-    if unknown:
-        raise ValueError("unsupported SGLang Omni processor tensor fields: " + ", ".join(unknown))
-
     tensors: dict[str, dict[str, Any]] = {}
-    for name, value in multimodal_train_inputs.items():
-        if not isinstance(value, torch.Tensor):
-            raise TypeError(
-                "multimodal_train_inputs must contain only tensors; " f"{name!r} has type {type(value).__name__}"
-            )
-        tensor = value.detach().to(device="cpu").contiguous()
+    for name, tensor in multimodal_train_inputs.items():
+        tensor = tensor.detach().cpu().contiguous()
         dtype = str(tensor.dtype).removeprefix("torch.")
-        if dtype not in _MULTIMODAL_TENSOR_DTYPES:
-            raise TypeError(f"unsupported multimodal tensor dtype for {name!r}: {dtype}")
         raw = tensor.reshape(-1).view(torch.uint8).numpy().tobytes()
         tensors[name] = {
             "dtype": dtype,
@@ -121,7 +83,7 @@ def compute_request_payload(
     input_ids: list[int],
     sampling_params: dict,
     multimodal_inputs: dict | None = None,
-    multimodal_train_inputs: dict[str, Any] | None = None,
+    multimodal_train_inputs: dict[str, torch.Tensor] | None = None,
 ) -> tuple[dict[str, Any] | None, Sample.Status | None]:
     sampling_params = deepcopy(sampling_params)
     max_new_tokens = sampling_params.pop("max_new_tokens", args.rollout_max_response_len)

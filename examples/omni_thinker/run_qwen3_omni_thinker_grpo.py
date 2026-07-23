@@ -104,7 +104,9 @@ def execute(args: ScriptArgs):
     # frozen audio tower for placeholder-embedding injection (audio-input training)
     mm_args = f"--qwen3-omni-audio-encoder-path {args.model_dir}/{OMNI_MODEL} "
 
-    consistency_args = "--use-rollout-logprobs " "--get-mismatch-metrics " "--use-tis " "--tis-clip 2.0 "
+    # trainer recomputes old logprobs (needed by TIS); rollout logprobs feed the TIS weight
+    # and the mismatch metrics ("--use-rollout-logprobs" is mutually exclusive with TIS)
+    consistency_args = "--get-mismatch-metrics " "--use-tis " "--tis-clip 2.0 "
     if args.sync_mode == "skip":
         consistency_args += "--debug-skip-weight-update "
 

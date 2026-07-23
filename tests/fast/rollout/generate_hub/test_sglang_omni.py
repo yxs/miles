@@ -3,6 +3,7 @@ import base64
 import sys
 from types import SimpleNamespace
 
+import pytest
 import torch
 
 from miles.rollout.generate_utils.generate_endpoint_utils import serialize_multimodal_train_inputs
@@ -27,9 +28,11 @@ def test_serialize_audio_video_processor_tensors():
         encoded = bundle["tensors"][name]
         assert encoded["dtype"] == str(tensor.dtype).removeprefix("torch.")
         assert encoded["shape"] == list(tensor.shape)
-        assert base64.b64decode(encoded["data"]) == (
-            tensor.contiguous().reshape(-1).view(torch.uint8).numpy().tobytes()
-        )
+        decoded = torch.frombuffer(
+            bytearray(base64.b64decode(encoded["data"])),
+            dtype=getattr(torch, encoded["dtype"]),
+        ).reshape(encoded["shape"])
+        assert torch.equal(decoded, tensor)
 
 
 def test_qwen_omni_media_extraction_and_tensor_normalization(monkeypatch):
@@ -124,3 +127,94 @@ def test_sglang_omni_adapter_sends_processed_audio_video(monkeypatch):
         "pixel_values_videos",
     }
     assert captured["headers"] is None
+
+
+def _adapter_args() -> SimpleNamespace:
+    return SimpleNamespace(
+        sglang_router_ip="127.0.0.1",
+        sglang_router_port=30000,
+        sglang_router_policy="round_robin",
+        rollout_max_response_len=128,
+        rollout_max_context_len=0,
+        use_rollout_routing_replay=False,
+        use_rollout_indexer_replay=False,
+    )
+
+
+def test_sglang_omni_adapter_rejects_multimodal_without_train_inputs(monkeypatch):
+    from miles.rollout.generate_hub import sglang_omni
+
+    monkeypatch.setattr(
+        sglang_omni,
+        "compute_prompt_ids_from_sample",
+        lambda state, sample: [1, 2, 3],
+    )
+    generate_input = SimpleNamespace(
+        args=_adapter_args(),
+        sample=Sample(multimodal_inputs={"audio": ["audio"]}),
+        sampling_params={"temperature": 1.0, "max_new_tokens": 16},
+        state=None,
+    )
+
+    with pytest.raises(ValueError, match="requires processor-produced"):
+        asyncio.run(sglang_omni.generate(generate_input))
+
+
+def test_sglang_omni_adapter_truncates_exhausted_resume(monkeypatch):
+    from miles.rollout.generate_hub import sglang_omni
+
+    async def fail_post(url, payload, headers=None):
+        raise AssertionError("post must not run for an exhausted resume")
+
+    monkeypatch.setattr(sglang_omni, "post", fail_post)
+    monkeypatch.setattr(
+        sglang_omni,
+        "compute_prompt_ids_from_sample",
+        lambda state, sample: [1, 2, 3],
+    )
+    sample = Sample(response="hi", tokens=[1, 2, 3, 4, 5])
+    generate_input = SimpleNamespace(
+        args=_adapter_args(),
+        sample=sample,
+        sampling_params={"temperature": 1.0, "max_new_tokens": 2},
+        state=None,
+    )
+
+    output = asyncio.run(sglang_omni.generate(generate_input))
+
+    assert sample.status == Sample.Status.TRUNCATED
+    assert output.samples is sample
+
+
+def test_sglang_omni_adapter_resumes_partial_rollout(monkeypatch):
+    from miles.rollout.generate_hub import sglang_omni
+
+    captured = {}
+
+    async def fake_post(url, payload, headers=None):
+        captured["payload"] = payload
+        return {}
+
+    async def fake_update(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(sglang_omni, "post", fake_post)
+    monkeypatch.setattr(sglang_omni, "update_sample_from_response", fake_update)
+    monkeypatch.setattr(
+        sglang_omni,
+        "compute_prompt_ids_from_sample",
+        lambda state, sample: [1, 2, 3],
+    )
+    sample = Sample(response="hi", tokens=[1, 2, 3, 4, 5])
+    sampling_params = {"temperature": 1.0, "max_new_tokens": 16}
+    generate_input = SimpleNamespace(
+        args=_adapter_args(),
+        sample=sample,
+        sampling_params=sampling_params,
+        state=None,
+    )
+
+    asyncio.run(sglang_omni.generate(generate_input))
+
+    assert captured["payload"]["input_ids"] == [1, 2, 3, 4, 5]
+    assert sampling_params["max_new_tokens"] == 14

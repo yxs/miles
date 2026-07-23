@@ -1,5 +1,8 @@
 # Megatron model args for the Qwen3-Omni-30B-A3B thinker (text MoE).
-# Architecturally Qwen3-30B-A3B; only vocab differs (152064 vs 151936, from the real config.json).
+# Architecturally Qwen3-30B-A3B; differs in vocab (152064 vs 151936) and the inert dense
+# ffn size: the omni thinker config stamps intermediate_size=768 (== moe_intermediate_size),
+# and every layer is MoE, so ffn-hidden-size never materializes weights - it must simply
+# match the HF config for hf_validate_args.
 
 NLAYERS="${MODEL_ARGS_NUM_LAYERS:-48}"
 FIRST_K_DENSE_REPLACE=0
@@ -25,7 +28,7 @@ MODEL_ARGS=(
    --kv-channels 128
    --num-layers $NLAYERS
    --hidden-size 2048
-   --ffn-hidden-size 6144
+   --ffn-hidden-size 768
 
    --normalization RMSNorm
    --position-embedding-type rope

@@ -1,33 +1,39 @@
-"""GRPO on the Qwen3-Omni-30B-A3B thinker (text MoE) with DAPO-math reward.
+"""GRPO on the Qwen3-Omni-30B-A3B thinker with audio-input AVQA (MCQ reward).
 
-Off-policy until live weight-sync lands: point --sglang-router-ip/port at a standalone omni
-server; the rollout half serves the frozen base while the trainer updates its own copy, with
-TIS + --get-mismatch-metrics absorbing/measuring the gap.
+Topology: rollout runs on a standalone sglang-omni text server (external engines; miles
+launches nothing locally); the trainer holds the extracted text backbone and injects
+frozen-audio-tower embeddings at placeholder positions (--qwen3-omni-audio-encoder-path).
+
+Weight sync: `--sync-mode skip` freezes the server (off-policy debug; TIS absorbs the gap),
+`--sync-mode distributed` pushes thinker.* weights over NCCL each step (on-policy).
 """
 
 import os
 from dataclasses import dataclass
 from typing import Literal
 
-import typer
 
 import miles.utils.external_utils.command_utils as U
 
 OMNI_MODEL = "Qwen3-Omni-30B-A3B-Instruct"
 THINKER_MODEL = "Qwen3-Omni-30B-A3B-Thinker"
 MEGATRON_MODEL_TYPE = "qwen3-omni-30B-A3B-thinker"
+AVQA_DATASET = "Joysw909/AVQA"
 
 
 @dataclass
 class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "normal"
+    sync_mode: Literal["skip", "distributed"] = "distributed"
     run_id: str = U.create_run_id()
     num_gpus_per_node: int = 8
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
     megatron_path: str = "/root/Megatron-LM"
-    omni_router_ip: str = "127.0.0.1"
-    omni_router_port: int = 30000
+    omni_server_ip: str = "127.0.0.1"
+    omni_server_port: int = 30000
+    omni_server_tp: int = 4  # TP size of the external omni server (NCCL group world_size = tp + 1)
+    avqa_max_samples: int = 5120
     extra_args: str = ""
 
 
@@ -47,7 +53,13 @@ def prepare(args: ScriptArgs):
         hf_checkpoint=f"{args.model_dir}/{THINKER_MODEL}",
         megatron_path=args.megatron_path,
     )
-    U.hf_download_dataset("zhuzilin/dapo-math-17k", data_dir=args.data_dir)
+    avqa_dir = f"{args.data_dir}/{AVQA_DATASET.split('/')[-1]}"
+    U.exec_command(f"hf download {AVQA_DATASET} --repo-type dataset --local-dir {avqa_dir}")
+    U.exec_command(
+        f"python {repo}/examples/omni_thinker/prepare_avqa.py "
+        f"--src {avqa_dir}/train_r1aqa_line.json --dst {args.data_dir}/avqa.jsonl "
+        f"--audio-root {avqa_dir} --max-samples {args.avqa_max_samples}"
+    )
 
 
 def execute(args: ScriptArgs):
@@ -58,39 +70,47 @@ def execute(args: ScriptArgs):
         f"--hf-checkpoint {args.model_dir}/{THINKER_MODEL}/ "
         f"--ref-load {ref_load_path} "
         f"--load {load_save_path} "
-        "--model-name qwen3omni_moe "  # body.* broadcast naming
+        "--model-name qwen3omni_moe "  # thinker.* broadcast naming
     )
 
+    debug_minimal = args.mode == "debug_minimal"
     rollout_args = (
         "--custom-generate-function-path miles.rollout.generate_hub.sglang_omni.generate "
-        f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
+        f"--prompt-data {args.data_dir}/avqa.jsonl "
         "--input-key prompt "
         "--label-key label "
+        '--multimodal-keys \'{"audio": "audios"}\' '
         "--apply-chat-template "
         "--rollout-shuffle "
-        "--rm-type dapo "
-        "--reward-key score "
-        "--num-rollout 3000 "
-        "--rollout-batch-size 32 "
-        "--n-samples-per-prompt 8 "
-        f"--rollout-max-response-len {100 if args.mode == 'debug_minimal' else 8192} "
+        "--rm-type gpqa "
+        f"--num-rollout {6 if debug_minimal else args.avqa_max_samples // 32} "
+        f"--rollout-batch-size {8 if debug_minimal else 32} "
+        f"--n-samples-per-prompt {4 if debug_minimal else 8} "
+        f"--rollout-max-response-len {100 if debug_minimal else 2048} "
         "--rollout-temperature 1 "
-        "--global-batch-size 256 "
+        f"--global-batch-size {32 if debug_minimal else 256} "
         "--balance-data "
-        f"--sglang-router-ip {args.omni_router_ip} "
-        f"--sglang-router-port {args.omni_router_port} "
+        # the standalone omni server doubles as the router: the adapter posts straight to it
+        f"--sglang-router-ip {args.omni_server_ip} "
+        f"--sglang-router-port {args.omni_server_port} "
+        "--rollout-external "
+        f"--rollout-external-engine-addrs {args.omni_server_ip}:{args.omni_server_port} "
+        "--rollout-external-admin-api sglang-omni "
+        "--rollout-weight-update-stages thinker "
+        f"--rollout-num-gpus {args.omni_server_tp} "
+        f"--rollout-num-gpus-per-engine {args.omni_server_tp} "
     )
 
-    consistency_args = (
-        "--use-rollout-logprobs "
-        "--get-mismatch-metrics "
-        "--use-tis "
-        "--tis-clip 2.0 "
-    )
+    # frozen audio tower for placeholder-embedding injection (audio-input training)
+    mm_args = f"--qwen3-omni-audio-encoder-path {args.model_dir}/{OMNI_MODEL} "
+
+    consistency_args = "--use-rollout-logprobs " "--get-mismatch-metrics " "--use-tis " "--tis-clip 2.0 "
+    if args.sync_mode == "skip":
+        consistency_args += "--debug-skip-weight-update "
 
     perf_args = (
         "--tensor-model-parallel-size 8 "
-        "--sequence-parallel "
+        # no --sequence-parallel: audio injection scatters full-sequence embeddings
         "--pipeline-model-parallel-size 1 "
         "--context-parallel-size 1 "
         "--expert-model-parallel-size 8 "
@@ -133,12 +153,12 @@ def execute(args: ScriptArgs):
         "--actor-num-nodes 1 "
         f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
         f"--num-gpus-per-node {args.num_gpus_per_node} "
-        f"--rollout-num-gpus {args.num_gpus_per_node} "
     )
 
     train_args = (
         f"{ckpt_args} "
         f"{rollout_args} "
+        f"{mm_args} "
         f"{consistency_args} "
         f"{optimizer_args} "
         f"{grpo_args} "
@@ -168,4 +188,4 @@ def main(args: ScriptArgs):
 
 
 if __name__ == "__main__":
-    typer.run(main)
+    main()

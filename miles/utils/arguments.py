@@ -600,6 +600,27 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Address and ports of the external engines.",
             )
             parser.add_argument(
+                "--rollout-external-admin-api",
+                choices=["sglang", "sglang-omni"],
+                default="sglang",
+                help=(
+                    "Admin/weight-update dialect of the external engines. 'sglang-omni' servers have no "
+                    "/flush_cache or /begin|end_weight_update routes and instead quiesce+flush internally "
+                    "around /update_weights_from_distributed."
+                ),
+            )
+            parser.add_argument(
+                "--rollout-weight-update-stages",
+                type=str,
+                default=None,
+                nargs="+",
+                help=(
+                    "Stage names to scope /init_weights_update_group, /update_weights_from_distributed and "
+                    "/destroy_weights_update_group to, for multi-stage (omni) servers; unset lets the server "
+                    "fan the op out to every registered stage, which breaks the NCCL world-size accounting."
+                ),
+            )
+            parser.add_argument(
                 "--update-weight-transfer-mode",
                 choices=["broadcast", "p2p", "disk-delta"],
                 default="broadcast",

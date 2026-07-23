@@ -430,10 +430,23 @@ class SGLangEngine(RayActor):
             payload,
         )
 
+    @property
+    def _omni_admin_api(self) -> bool:
+        """External sglang-omni server: no /flush_cache and no weight-update session routes;
+        the server quiesces and flushes internally around /update_weights_from_distributed."""
+        return getattr(getattr(self, "args", None), "rollout_external_admin_api", "sglang") == "sglang-omni"
+
+    def _weight_update_stages(self) -> list[str] | None:
+        """Stage scoping for multi-stage (omni) servers; unset means the server fans the
+        op out to every registered stage, breaking the NCCL world-size accounting."""
+        return getattr(getattr(self, "args", None), "rollout_weight_update_stages", None)
+
     def flush_cache(self):
         """Flush the cache of the server."""
         if self.node_rank != 0:
             return
+        if self._omni_admin_api:
+            return  # no such route; the omni server flushes inside its update lifecycle
         last_message = None
         for _ in range(60):
             try:
@@ -559,26 +572,24 @@ class SGLangEngine(RayActor):
         return self._make_request("update_weights_from_disk", payload)
 
     def init_weights_update_group(self, master_address, master_port, rank_offset, world_size, group_name, backend):
-        return self._make_request(
-            "init_weights_update_group",
-            {
-                "master_address": master_address,
-                "master_port": master_port,
-                "rank_offset": rank_offset,
-                "world_size": world_size,
-                "group_name": group_name,
-                "backend": backend,
-            },
-        )
+        payload = {
+            "master_address": master_address,
+            "master_port": master_port,
+            "rank_offset": rank_offset,
+            "world_size": world_size,
+            "group_name": group_name,
+            "backend": backend,
+        }
+        if stages := self._weight_update_stages():
+            payload["stages"] = stages
+        return self._make_request("init_weights_update_group", payload)
 
     def destroy_weights_update_group(self, group_name):
+        payload = {"group_name": group_name}
+        if stages := self._weight_update_stages():
+            payload["stages"] = stages
         try:
-            return self._make_request(
-                "destroy_weights_update_group",
-                {
-                    "group_name": group_name,
-                },
-            )
+            return self._make_request("destroy_weights_update_group", payload)
         except requests.exceptions.RequestException:
             # catch the case there the engine is just created and does not have the group.
             pass
@@ -591,8 +602,12 @@ class SGLangEngine(RayActor):
             "dtypes": [str(dtype).replace("torch.", "") for dtype in dtypes],
             "shapes": shapes,
             "group_name": group_name,
-            "flush_cache": flush_cache,
+            # engine-level flush is a no-op under the omni admin api, so the server-internal
+            # post-update flush must run instead
+            "flush_cache": True if self._omni_admin_api else flush_cache,
         }
+        if stages := self._weight_update_stages():
+            payload["stages"] = stages
         if weight_version is not None:
             payload["weight_version"] = weight_version
         return self._make_request(
@@ -615,10 +630,14 @@ class SGLangEngine(RayActor):
 
     def begin_weight_update(self):
         """Open a weight-update session on the engine (restores packed weights for loading)."""
+        if self._omni_admin_api:
+            return  # no such route; the omni server runs its own update lifecycle
         return self._make_request("begin_weight_update", {})
 
     def end_weight_update(self):
         """Close the weight-update session (post-load + quant post-process on the full model)."""
+        if self._omni_admin_api:
+            return
         return self._make_request("end_weight_update", {})
 
     def update_weight_version(self, weight_version: str):

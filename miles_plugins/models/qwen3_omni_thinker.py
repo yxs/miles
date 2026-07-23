@@ -80,7 +80,9 @@ def load_frozen_audio_encoder(omni_checkpoint: str | Path, device, dtype) -> tor
     encoder = encoder.to(device=device, dtype=dtype)
     encoder.requires_grad_(False)
     encoder.eval()
-    logger.info(f"loaded frozen Qwen3-Omni audio tower from {src} ({sum(p.numel() for p in encoder.parameters()):,} params)")
+    logger.info(
+        f"loaded frozen Qwen3-Omni audio tower from {src} ({sum(p.numel() for p in encoder.parameters()):,} params)"
+    )
     return encoder
 
 
@@ -108,7 +110,9 @@ def scatter_audio_embeddings(hidden, input_ids, audio_embeds, audio_token_id) ->
     interleave samples for b > 1.
     """
     assert hidden.dim() == 3 and input_ids.dim() == 2, f"{hidden.shape=} {input_ids.shape=}"
-    assert hidden.size(1) == 1 and input_ids.size(0) == 1, f"audio injection requires the packed [1, s] layout, got {input_ids.shape}"
+    assert (
+        hidden.size(1) == 1 and input_ids.size(0) == 1
+    ), f"audio injection requires the packed [1, s] layout, got {input_ids.shape}"
     mask = input_ids[0] == audio_token_id  # [s]
     num_positions = int(mask.sum())
     assert num_positions == audio_embeds.size(0), (
@@ -153,9 +157,9 @@ def install_audio_injection(model, args, encoder_loader=None, audio_token_id: in
 
         assert not fargs, "audio injection expects keyword-only forward calls"
         assert "decoder_input" not in kwargs, "decoder_input already set upstream"
-        assert not getattr(args, "sequence_parallel", False), (
-            "audio injection scatters full-sequence embeddings; run with sequence-parallel off"
-        )
+        assert not getattr(
+            args, "sequence_parallel", False
+        ), "audio injection scatters full-sequence embeddings; run with sequence-parallel off"
         assert getattr(args, "context_parallel_size", 1) == 1, "audio injection requires context_parallel_size == 1"
 
         input_ids = kwargs["input_ids"]

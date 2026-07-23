@@ -32,9 +32,9 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     }, f"{sample.status=}"
     # the omni server declares return_routed_experts/return_indexer_topk in its protocol but
     # implements neither replay; fail loud instead of training on silently missing traces
-    assert not (args.use_rollout_routing_replay or args.use_rollout_indexer_replay), (
-        "sglang-omni rollout has no routing/indexer replay; unset --use-rollout-routing-replay / --use-rollout-indexer-replay"
-    )
+    assert not (
+        args.use_rollout_routing_replay or args.use_rollout_indexer_replay
+    ), "sglang-omni rollout has no routing/indexer replay; unset --use-rollout-routing-replay / --use-rollout-indexer-replay"
     url = f"http://{args.sglang_router_ip}:{args.sglang_router_port}/generate"
 
     prompt_ids = compute_prompt_ids_from_sample(input.state, sample)

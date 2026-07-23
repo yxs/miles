@@ -61,8 +61,14 @@ def extract(src, dst, shard_size_gb: float = 5.0) -> int:
         json.dump(synthesize_thinker_config(omni_config), f, indent=2)
 
     for fname in (
-        "tokenizer.json", "tokenizer_config.json", "vocab.json", "merges.txt",
-        "special_tokens_map.json", "generation_config.json", "chat_template.json", "chat_template.jinja",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "vocab.json",
+        "merges.txt",
+        "special_tokens_map.json",
+        "generation_config.json",
+        "chat_template.json",
+        "chat_template.jinja",
     ):
         if (src / fname).exists():
             shutil.copy2(src / fname, dst / fname)

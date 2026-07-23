@@ -62,7 +62,7 @@ def execute(args: ScriptArgs):
     )
 
     rollout_args = (
-        "--custom-generate-function-path miles.rollout.generate_hub.omni_thinker.generate "
+        "--custom-generate-function-path miles.rollout.generate_hub.sglang_omni.generate "
         f"--prompt-data {args.data_dir}/dapo-math-17k/dapo-math-17k.jsonl "
         "--input-key prompt "
         "--label-key label "

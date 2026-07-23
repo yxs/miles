@@ -3,7 +3,9 @@
 miles loads HF via AutoBridge keyed on model_type; the composite omni checkpoint has
 no bridge, but the thinker text backbone is a plain Qwen3-MoE. This writes a
 self-contained HF dir (thinker text + lm_head, renamed, model_type=qwen3_moe) for the
-existing Qwen3MoEBridge.
+existing Qwen3MoEBridge. Audio/visual towers are dropped here on purpose: the trainer
+loads them frozen from the original omni checkpoint (see the audio-injection wrapper),
+and the rollout server keeps its own copies.
 
     python tools/extract_qwen3_omni_thinker.py --src <omni> --dst <thinker>
 """
@@ -36,22 +38,21 @@ def synthesize_thinker_config(omni_config: dict) -> dict:
     return cfg
 
 
-def main() -> None:
-    import argparse
+def extract(src, dst, shard_size_gb: float = 5.0) -> int:
+    """Stream thinker tensors from src into sharded safetensors under dst.
+
+    Each shard is written (and its buffer released) as soon as it fills, so peak RAM is
+    one shard, not the whole ~60 GB thinker. Returns the number of kept tensors.
+    """
     import json
+    import os
     import shutil
     from pathlib import Path
 
     from safetensors import safe_open
     from safetensors.torch import save_file
 
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--src", required=True)
-    parser.add_argument("--dst", required=True)
-    parser.add_argument("--shard-size-gb", type=float, default=5.0)
-    args = parser.parse_args()
-
-    src, dst = Path(args.src), Path(args.dst)
+    src, dst = Path(src), Path(dst)
     dst.mkdir(parents=True, exist_ok=True)
 
     with open(src / "config.json") as f:
@@ -73,21 +74,24 @@ def main() -> None:
     else:
         shard_files = ["model.safetensors"]
 
-    shard_size_bytes = int(args.shard_size_gb * (1024 ** 3))
+    shard_size_bytes = int(shard_size_gb * (1024**3))
     out_index: dict[str, str] = {}
-    out_shards: list[tuple[str, dict]] = []
+    shard_names: list[str] = []
     buf: dict = {}
     buf_bytes = 0
+    total_size = 0
     total_kept = 0
 
     def flush():
-        nonlocal buf, buf_bytes
+        nonlocal buf, buf_bytes, total_size
         if not buf:
             return
-        shard_name = f"model-{len(out_shards) + 1:05d}.safetensors"
-        out_shards.append((shard_name, buf))
-        for k in buf:
+        shard_name = f"model-{len(shard_names) + 1:05d}.safetensors"
+        save_file(buf, dst / shard_name, metadata={"format": "pt"})
+        shard_names.append(shard_name)
+        for k, t in buf.items():
             out_index[k] = shard_name
+            total_size += t.numel() * t.element_size()
         buf, buf_bytes = {}, 0
 
     for shard_file in shard_files:
@@ -104,16 +108,28 @@ def main() -> None:
                     flush()
     flush()
 
-    if len(out_shards) == 1:
-        save_file(out_shards[0][1], dst / "model.safetensors", metadata={"format": "pt"})
+    if total_kept == 0:
+        raise ValueError(f"no thinker tensors found under {src} (wrong --src?)")
+
+    if len(shard_names) == 1:
+        os.rename(dst / shard_names[0], dst / "model.safetensors")
     else:
-        total_size = sum(t.numel() * t.element_size() for _, ts in out_shards for t in ts.values())
-        for shard_name, tensors in out_shards:
-            save_file(tensors, dst / shard_name, metadata={"format": "pt"})
         with open(dst / "model.safetensors.index.json", "w") as f:
             json.dump({"metadata": {"total_size": total_size}, "weight_map": out_index}, f, indent=2)
 
     print(f"[done] {total_kept} thinker tensors -> {dst}")
+    return total_kept
+
+
+def main() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--src", required=True)
+    parser.add_argument("--dst", required=True)
+    parser.add_argument("--shard-size-gb", type=float, default=5.0)
+    args = parser.parse_args()
+    extract(args.src, args.dst, shard_size_gb=args.shard_size_gb)
 
 
 if __name__ == "__main__":

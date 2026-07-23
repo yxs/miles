@@ -31,6 +31,7 @@ DEFAULT_SAMPLING_PARAMS = {"max_new_tokens": 64, "temperature": 0.7}
 VARIANT_TO_GENERATE_FN_PATH = {
     "old_sglang_rollout": "miles.rollout.sglang_rollout.generate",
     "single_turn": "miles.rollout.generate_hub.single_turn.generate",
+    "sglang_omni": "miles.rollout.generate_hub.sglang_omni.generate",
     "multi_turn_single_sample": "miles.rollout.generate_hub.multi_turn.generate",
     "multi_turn_multi_samples": "miles.rollout.generate_hub.multi_turn.generate",
     "agentic_tool_call_single_sample": "miles.rollout.generate_hub.agentic_tool_call.generate",

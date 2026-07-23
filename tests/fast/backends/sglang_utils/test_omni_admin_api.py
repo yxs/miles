@@ -22,6 +22,7 @@ from miles.backends.sglang_utils.sglang_engine import SGLangEngine
 def _engine(monkeypatch, calls, **args_overrides):
     engine = SGLangEngine.__new__(SGLangEngine)
     engine.node_rank = 0
+    engine.rank = 0
     engine.server_host = "fake-host"
     engine.server_port = 1234
     engine.args = SimpleNamespace(
@@ -89,6 +90,22 @@ def test_omni_admin_api_delegates_flush_to_update_request(monkeypatch):
     assert endpoint == "update_weights_from_distributed"
     # the engine-level flush is a no-op under omni, so the server-internal one must run
     assert payload["flush_cache"] is True
+
+
+def test_omni_admin_api_external_init_skips_server_args_check(monkeypatch):
+    import miles.backends.sglang_utils.sglang_engine as engine_mod
+
+    calls = []
+    engine = _engine(monkeypatch, calls, rollout_external_admin_api="sglang-omni")
+    monkeypatch.setattr(engine_mod, "_wait_server_healthy", lambda **kwargs: calls.append("health"))
+    monkeypatch.setattr(
+        "requests.get",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("omni server has no /get_server_info")),
+    )
+
+    engine._init_external({"host": "fake-host", "port": 1234}, external_engine_need_check_fields=["port"])
+
+    assert calls == ["health"]
 
 
 def test_sglang_admin_api_keeps_default_lifecycle(monkeypatch):

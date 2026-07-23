@@ -26,7 +26,7 @@ class ScriptArgs(U.ExecuteTrainConfig):
     mode: Literal["normal", "debug_minimal"] = "normal"
     sync_mode: Literal["skip", "distributed"] = "distributed"
     run_id: str = U.create_run_id()
-    num_gpus_per_node: int = 8
+    actor_tp: int = 4  # actor GPUs (TP=EP); ray also reserves omni_server_tp bundles for the external attach
     data_dir: str = "/root/datasets"
     model_dir: str = "/root/models"
     megatron_path: str = "/root/Megatron-LM"
@@ -48,7 +48,7 @@ def prepare(args: ScriptArgs):
     U.convert_checkpoint(
         model_name=THINKER_MODEL,
         megatron_model_type=MEGATRON_MODEL_TYPE,
-        num_gpus_per_node=args.num_gpus_per_node,
+        num_gpus_per_node=args.actor_tp,
         dir_dst=args.model_dir,
         hf_checkpoint=f"{args.model_dir}/{THINKER_MODEL}",
         megatron_path=args.megatron_path,
@@ -109,11 +109,11 @@ def execute(args: ScriptArgs):
         consistency_args += "--debug-skip-weight-update "
 
     perf_args = (
-        "--tensor-model-parallel-size 8 "
+        f"--tensor-model-parallel-size {args.actor_tp} "
         # no --sequence-parallel: audio injection scatters full-sequence embeddings
         "--pipeline-model-parallel-size 1 "
         "--context-parallel-size 1 "
-        "--expert-model-parallel-size 8 "
+        f"--expert-model-parallel-size {args.actor_tp} "
         "--expert-tensor-parallel-size 1 "
         "--recompute-granularity full "
         "--recompute-method uniform "
@@ -151,8 +151,8 @@ def execute(args: ScriptArgs):
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
         "--actor-num-nodes 1 "
-        f"--actor-num-gpus-per-node {args.num_gpus_per_node} "
-        f"--num-gpus-per-node {args.num_gpus_per_node} "
+        f"--actor-num-gpus-per-node {args.actor_tp} "
+        f"--num-gpus-per-node {args.actor_tp + args.omni_server_tp} "
     )
 
     train_args = (
@@ -170,7 +170,7 @@ def execute(args: ScriptArgs):
 
     U.execute_train(
         train_args=train_args,
-        num_gpus_per_node=args.num_gpus_per_node,
+        num_gpus_per_node=args.actor_tp + args.omni_server_tp,
         megatron_model_type=MEGATRON_MODEL_TYPE,
         train_script="train.py",
         megatron_path=args.megatron_path,

@@ -240,6 +240,10 @@ class SGLangEngine(RayActor):
             api_key=None,
             is_process_alive=lambda: True,
         )
+        if self._omni_admin_api:
+            # omni servers expose no /get_server_info; health is the only preflight
+            logger.info("sglang-omni admin api: skipping /get_server_info sanity check")
+            return
         actual_server_args = _get_actual_server_args()
         _sanity_check_server_args(actual_server_args, expect_server_args)
 

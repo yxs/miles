@@ -69,9 +69,20 @@ def extract(src, dst, shard_size_gb: float = 5.0) -> int:
         "generation_config.json",
         "chat_template.json",
         "chat_template.jinja",
+        # processor artifacts: the trainer loads AutoProcessor from this dir to expand
+        # audio/vision placeholders exactly like the rollout server
+        "preprocessor_config.json",
+        "processor_config.json",
+        "video_preprocessor_config.json",
     ):
         if (src / fname).exists():
             shutil.copy2(src / fname, dst / fname)
+
+    # chat_template.json is a processor-level file; AutoTokenizer only auto-loads the
+    # .jinja variant, and the trainer templates via the tokenizer
+    if not (src / "chat_template.jinja").exists() and (src / "chat_template.json").exists():
+        with open(src / "chat_template.json") as f:
+            (dst / "chat_template.jinja").write_text(json.load(f)["chat_template"])
 
     index_path = src / "model.safetensors.index.json"
     if index_path.exists():

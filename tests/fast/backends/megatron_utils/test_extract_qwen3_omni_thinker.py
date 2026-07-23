@@ -143,6 +143,20 @@ def test_extract_multi_shard_writes_streaming_index(tmp_path):
         assert torch.equal(out[f"model.layers.{i}.mlp.gate.weight"], torch.full((64, 64), float(i)))
 
 
+def test_extract_unpacks_chat_template_json_for_the_tokenizer(tmp_path):
+    tool = _load_extract_tool()
+    src, dst = tmp_path / "src", tmp_path / "dst"
+    _write_omni_src(src, {"thinker.model.norm.weight": torch.zeros(2)})
+    template = "{% for m in messages %}{{ m.content }}{% endfor %}"
+    with open(src / "chat_template.json", "w") as f:
+        json.dump({"chat_template": template}, f)
+
+    tool.extract(src, dst, shard_size_gb=1.0)
+
+    # AutoTokenizer auto-loads chat_template.jinja; the .json variant is processor-only
+    assert (dst / "chat_template.jinja").read_text() == template
+
+
 def test_extract_fails_loud_when_no_thinker_tensors(tmp_path):
     tool = _load_extract_tool()
     src, dst = tmp_path / "src", tmp_path / "dst"

@@ -2,7 +2,6 @@
 Utils to integrate SGLang's `/generate` endpoint with RL things like Sample.
 """
 
-import base64
 from copy import deepcopy
 from typing import Any
 
@@ -31,7 +30,7 @@ def serialize_multimodal_train_inputs(
         tensors[name] = {
             "dtype": dtype,
             "shape": list(tensor.shape),
-            "data": base64.b64encode(raw).decode("ascii"),
+            "data": pybase64.b64encode(raw).decode("ascii"),
         }
 
     return {"version": 1, "tensors": tensors}

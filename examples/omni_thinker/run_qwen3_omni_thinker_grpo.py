@@ -105,8 +105,14 @@ def execute(args: ScriptArgs):
     mm_args = f"--qwen3-omni-audio-encoder-path {args.model_dir}/{OMNI_MODEL} "
 
     # trainer recomputes old logprobs (needed by TIS); rollout logprobs feed the TIS weight
-    # and the mismatch metrics ("--use-rollout-logprobs" is mutually exclusive with TIS)
-    consistency_args = "--get-mismatch-metrics " "--use-tis " "--tis-clip 2.0 "
+    # and the mismatch metrics ("--use-rollout-logprobs" is mutually exclusive with TIS);
+    # the MIS helper is the upstream-maintained TIS impl + fine-grained mismatch metrics
+    consistency_args = (
+        "--get-mismatch-metrics "
+        "--use-tis "
+        "--custom-tis-function-path examples.train_infer_mismatch_helper.mis.compute_mis_weights_with_cp "
+        "--custom-config-path examples/train_infer_mismatch_helper/mis.yaml "
+    )
     if args.sync_mode == "skip":
         consistency_args += "--debug-skip-weight-update "
 

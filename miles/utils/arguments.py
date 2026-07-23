@@ -823,6 +823,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                     'JSON string for multimodal data mapping media types to data keys. Example: \'{"image": "image_file"}\''
                 ),
             )
+            parser.add_argument(
+                "--qwen3-omni-audio-encoder-path",
+                type=str,
+                default=None,
+                help=(
+                    "Path to the full Qwen3-Omni HF checkpoint; enables frozen-audio-tower embedding "
+                    "injection into the extracted text-backbone trainer (audio-input RL). "
+                    "See miles_plugins/models/qwen3_omni_thinker.py."
+                ),
+            )
             parser.add_argument("--metadata-key", type=str, default="metadata", help="JSON dataset key")
             parser.add_argument(
                 "--tool-key",

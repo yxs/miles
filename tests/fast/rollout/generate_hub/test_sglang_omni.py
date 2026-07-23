@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import sys
 from types import SimpleNamespace
 
 import torch
@@ -41,7 +42,11 @@ def test_qwen_omni_media_extraction_and_tensor_normalization(monkeypatch):
         captured["conversations"], captured["kwargs"] = conversations, kwargs
         return ["audio samples"], ["image"], ["video frames"]
 
-    monkeypatch.setattr(processing_utils, "process_mm_info", fake_process_mm_info)
+    monkeypatch.setitem(
+        sys.modules,
+        "qwen_omni_utils",
+        SimpleNamespace(process_mm_info=fake_process_mm_info),
+    )
     processor = object.__new__(processing_utils.Qwen3OmniMoeProcessor)
     processor.image_processor = SimpleNamespace(patch_size=16)
 

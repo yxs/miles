@@ -7,7 +7,6 @@ from pathlib import Path
 
 import torch
 from huggingface_hub import hf_hub_download
-from qwen_omni_utils import process_mm_info
 from tokenizers import Tokenizer as RawTokenizer
 from transformers import AutoProcessor, AutoTokenizer, PreTrainedTokenizerBase, ProcessorMixin, Qwen3OmniMoeProcessor
 
@@ -165,6 +164,8 @@ def load_processor(name_or_path: str, **kwargs):
 def process_vision_info(prompt, processor):
     # TODO: temporary solution, will write image utils for miles later
     if isinstance(processor, Qwen3OmniMoeProcessor):
+        from qwen_omni_utils import process_mm_info
+
         audios, images, videos = process_mm_info(
             prompt,
             use_audio_in_video=False,

@@ -155,7 +155,10 @@ def execute(args: ScriptArgs):
     misc_args = (
         "--attention-dropout 0.0 "
         "--hidden-dropout 0.0 "
-        "--accumulate-allreduce-grads-in-fp32 "
+        # mcore requires SP for MoE+TP>1, and the audio injection needs SP off, so the
+        # debug tier runs TP1 (bf16 grad accum keeps 2xH200 within memory)
+        + ("" if debug_minimal else "--accumulate-allreduce-grads-in-fp32 ")
+        + 
         "--attention-softmax-in-fp32 "
         "--attention-backend flash "
         "--actor-num-nodes 1 "

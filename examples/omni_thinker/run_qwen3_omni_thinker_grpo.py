@@ -136,10 +136,10 @@ def execute(args: ScriptArgs):
 
     grpo_args = (
         "--advantage-estimator grpo "
-        "--use-kl-loss "
-        "--kl-loss-coef 0.00 "
-        "--kl-loss-type low_var_kl "
-        "--entropy-coef 0.00 "
+        # kl coef is 0, but --use-kl-loss still loads a full ref-model copy (~33 GB/GPU
+        # at TP1); the debug tier drops it to fit 2 GPUs
+        + ("" if debug_minimal else "--use-kl-loss --kl-loss-coef 0.00 --kl-loss-type low_var_kl ")
+        + "--entropy-coef 0.00 "
         "--eps-clip 0.2 "
         "--eps-clip-high 0.28 "
     )
@@ -186,8 +186,6 @@ def execute(args: ScriptArgs):
         megatron_path=args.megatron_path,
         extra_env_vars={
             "FLASHINFER_DISABLE_VERSION_CHECK": "1",
-            # MoE token-dispatch allgathers die on fragmentation headroom otherwise
-            "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
             "PYTHONPATH": f"{args.megatron_path}",
         },
     )

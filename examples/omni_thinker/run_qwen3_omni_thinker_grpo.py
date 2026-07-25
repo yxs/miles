@@ -186,6 +186,8 @@ def execute(args: ScriptArgs):
         megatron_path=args.megatron_path,
         extra_env_vars={
             "FLASHINFER_DISABLE_VERSION_CHECK": "1",
+            # MoE token-dispatch allgathers die on fragmentation headroom otherwise
+            "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
             "PYTHONPATH": f"{args.megatron_path}",
         },
     )

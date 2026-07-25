@@ -7,6 +7,7 @@ import sglang_router
 from packaging.version import parse
 from tqdm import tqdm
 
+from miles.rollout.generate_utils.generate_endpoint_utils import abort_external_omni_requests, is_omni_external_admin
 from miles.rollout.base_types import RolloutFnTrainOutput
 from miles.rollout.filter_hub.base_types import MetricGatherer, call_dynamic_filter
 from miles.rollout.generate_utils.prefill_logprobs import recompute_samples_rollout_logprobs_via_prefill
@@ -25,9 +26,13 @@ async def abort(state: GenerateState, pendings: set, rollout_id: int) -> list[li
     assert not state.aborted
     state.aborted = True
 
-    urls = await get_worker_urls(args)
-    logger.info(f"Abort request for {urls}")
-    await asyncio.gather(*[post(f"{url}/abort_request", {"abort_all": True}) for url in urls])
+    if is_omni_external_admin(args):
+        # bare omni servers have no router /workers nor /abort_request
+        await abort_external_omni_requests(args)
+    else:
+        urls = await get_worker_urls(args)
+        logger.info(f"Abort request for {urls}")
+        await asyncio.gather(*[post(f"{url}/abort_request", {"abort_all": True}) for url in urls])
 
     # Let the agent integration tear down its in-flight trials so they stop hitting
     # SGLang, instead of running on until their own max_seq_len / timeout.

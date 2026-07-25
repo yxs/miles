@@ -204,6 +204,41 @@ def test_sglang_omni_adapter_truncates_exhausted_resume(monkeypatch):
     assert output.samples is sample
 
 
+def test_abort_external_omni_requests_uses_pause_abort_continue(monkeypatch):
+    # a bare omni server has neither the router /workers listing nor /abort_request;
+    # pause(mode=abort) + continue is the omni-native equivalent
+    from miles.rollout.generate_utils import generate_endpoint_utils as geu
+
+    calls = []
+
+    async def fake_post(url, payload, **kwargs):
+        calls.append((url, payload))
+        return {}
+
+    monkeypatch.setattr(geu, "post", fake_post)
+    args = SimpleNamespace(
+        rollout_external_admin_api="sglang-omni",
+        rollout_external_engine_addrs=["10.0.0.1:30111", "10.0.0.2:30111"],
+    )
+
+    asyncio.run(geu.abort_external_omni_requests(args))
+
+    assert calls == [
+        ("http://10.0.0.1:30111/pause_generation", {"mode": "abort"}),
+        ("http://10.0.0.1:30111/continue_generation", {}),
+        ("http://10.0.0.2:30111/pause_generation", {"mode": "abort"}),
+        ("http://10.0.0.2:30111/continue_generation", {}),
+    ]
+
+
+def test_is_omni_external_admin(monkeypatch):
+    from miles.rollout.generate_utils import generate_endpoint_utils as geu
+
+    assert geu.is_omni_external_admin(SimpleNamespace(rollout_external_admin_api="sglang-omni")) is True
+    assert geu.is_omni_external_admin(SimpleNamespace(rollout_external_admin_api="sglang")) is False
+    assert geu.is_omni_external_admin(SimpleNamespace()) is False
+
+
 class TestHarness:
     """Through the real parse_args + mock sglang server harness (generation_fixtures)."""
 

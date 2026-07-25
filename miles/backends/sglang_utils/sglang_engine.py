@@ -86,40 +86,32 @@ def launch_server_process(server_args: ServerArgs) -> multiprocessing.Process:
     return p
 
 
-def _wait_server_healthy(base_url, api_key, is_process_alive):
+def _wait_server_healthy(base_url, api_key, is_process_alive, probe_paths=("health_generate", "flush_cache")):
+    """Poll `probe_paths` in order until each returns 200.
+
+    The sglang defaults probe /health_generate then /flush_cache (queue drained before
+    offload); servers without those routes (sglang-omni) must pass their own paths or the
+    404s retry forever.
+    """
     headers = {
         "Content-Type": "application/json; charset=utf-8",
         "Authorization": f"Bearer {api_key}",
     }
 
     with requests.Session() as session:
-        while True:
-            try:
-                response = session.get(f"{base_url}/health_generate", headers=headers)
-                if response.status_code == 200:
-                    break
-            except requests.RequestException:
-                pass
+        for path in probe_paths:
+            while True:
+                try:
+                    response = session.get(f"{base_url}/{path}", headers=headers)
+                    if response.status_code == 200:
+                        break
+                except requests.RequestException:
+                    pass
 
-            if not is_process_alive():
-                raise Exception("Server process terminated unexpectedly.")
+                if not is_process_alive():
+                    raise Exception("Server process terminated unexpectedly.")
 
-            time.sleep(2)
-
-        # use flush_cache to make sure the working queue is empty, so that we can do offload
-        while True:
-            try:
-                response = session.get(f"{base_url}/flush_cache", headers=headers)
-                if response.status_code == 200:
-                    break
-
-            except requests.RequestException:
-                pass
-
-            if not is_process_alive():
-                raise Exception("Server process terminated unexpectedly.")
-
-            time.sleep(2)
+                time.sleep(2)
 
 
 class SGLangEngine(RayActor):
@@ -239,6 +231,7 @@ class SGLangEngine(RayActor):
             base_url=f"http://{self.server_host}:{self.server_port}",
             api_key=None,
             is_process_alive=lambda: True,
+            probe_paths=("health",) if self._omni_admin_api else ("health_generate", "flush_cache"),
         )
         if self._omni_admin_api:
             # omni servers expose no /get_server_info; health is the only preflight

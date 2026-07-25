@@ -273,6 +273,63 @@ def test_sglang_omni_adapter_sets_omni_contract_fields(monkeypatch):
     assert "metadata" not in payload
 
 
+def test_sglang_omni_adapter_filters_sampling_params_to_omni_schema(monkeypatch):
+    # the omni RolloutSamplingParams is extra="forbid": miles' detok-only keys 422 the request
+    from miles.rollout.generate_hub import sglang_omni
+
+    captured = {}
+
+    async def fake_post(url, payload, headers=None):
+        captured["payload"] = payload
+        return {}
+
+    async def fake_update(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(sglang_omni, "post", fake_post)
+    monkeypatch.setattr(sglang_omni, "update_sample_from_response", fake_update)
+    monkeypatch.setattr(sglang_omni, "compute_prompt_ids_from_sample", lambda state, sample: [1, 2, 3])
+    generate_input = SimpleNamespace(
+        args=_adapter_args(),
+        sample=Sample(),
+        sampling_params={
+            "temperature": 1.0,
+            "top_p": 1.0,
+            "top_k": -1,
+            "max_new_tokens": 16,
+            "stop": None,
+            "stop_token_ids": None,
+            "skip_special_tokens": False,
+            "no_stop_trim": True,
+            "spaces_between_special_tokens": False,
+        },
+        state=None,
+    )
+
+    asyncio.run(sglang_omni.generate(generate_input))
+
+    sp = captured["payload"]["sampling_params"]
+    for detok_key in ("skip_special_tokens", "no_stop_trim", "spaces_between_special_tokens"):
+        assert detok_key not in sp
+    assert sp["temperature"] == 1.0 and sp["max_new_tokens"] == 16 and sp["top_k"] == -1
+    assert sp["repetition_penalty"] == 1.0
+
+
+def test_sglang_omni_adapter_rejects_unknown_sampling_keys(monkeypatch):
+    from miles.rollout.generate_hub import sglang_omni
+
+    monkeypatch.setattr(sglang_omni, "compute_prompt_ids_from_sample", lambda state, sample: [1, 2, 3])
+    generate_input = SimpleNamespace(
+        args=_adapter_args(),
+        sample=Sample(),
+        sampling_params={"temperature": 1.0, "max_new_tokens": 16, "min_new_tokens": 4},
+        state=None,
+    )
+
+    with pytest.raises(AssertionError, match="min_new_tokens"):
+        asyncio.run(sglang_omni.generate(generate_input))
+
+
 def test_sglang_omni_adapter_forwards_sample_metadata(monkeypatch):
     from miles.rollout.generate_hub import sglang_omni
 

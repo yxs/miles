@@ -12,6 +12,13 @@ matching the trainer recompute convention.
 """
 
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
+
+# RolloutSamplingParams on the omni server is extra="forbid"; this mirrors its schema
+_OMNI_SAMPLING_KEYS = frozenset(
+    ("temperature", "top_p", "top_k", "min_p", "repetition_penalty", "stop", "stop_token_ids", "seed", "max_new_tokens", "max_tokens")
+)
+# detok/text-shaping flags: they never reach the token or logprob streams the trainer consumes
+_DETOK_ONLY_KEYS = frozenset(("skip_special_tokens", "no_stop_trim", "spaces_between_special_tokens"))
 from miles.rollout.generate_utils.generate_endpoint_utils import (
     compute_prompt_ids_from_sample,
     compute_request_payload,
@@ -71,6 +78,9 @@ async def generate(input: GenerateFnInput) -> GenerateFnOutput:
     payload["return_omni_rollout"] = False
     # the trainer recompute cannot replay a repetition penalty (logprobs would diverge)
     payload["sampling_params"]["repetition_penalty"] = 1.0
+    unknown_keys = set(payload["sampling_params"]) - _OMNI_SAMPLING_KEYS - _DETOK_ONLY_KEYS
+    assert not unknown_keys, f"sampling params outside the omni /generate schema: {sorted(unknown_keys)}"
+    payload["sampling_params"] = {k: v for k, v in payload["sampling_params"].items() if k in _OMNI_SAMPLING_KEYS}
     if sample.metadata:
         payload["metadata"] = sample.metadata
 

@@ -4,7 +4,6 @@ import importlib.util
 import json
 from pathlib import Path
 
-import pytest
 import torch
 from safetensors import safe_open
 from safetensors.torch import save_file
@@ -28,7 +27,9 @@ def test_vl_name_map_text_and_visual():
     m = _load_tool().map_thinker_param_name_vl
     assert m("thinker.lm_head.weight") == "lm_head.weight"
     assert m("thinker.model.embed_tokens.weight") == "model.language_model.embed_tokens.weight"
-    assert m("thinker.model.layers.3.self_attn.q_proj.weight") == "model.language_model.layers.3.self_attn.q_proj.weight"
+    assert (
+        m("thinker.model.layers.3.self_attn.q_proj.weight") == "model.language_model.layers.3.self_attn.q_proj.weight"
+    )
     assert m("thinker.model.layers.3.mlp.gate.weight") == "model.language_model.layers.3.mlp.gate.weight"
     assert m("thinker.visual.patch_embed.proj.weight") == "model.visual.patch_embed.proj.weight"
     assert m("thinker.visual.blocks.7.attn.qkv.weight") == "model.visual.blocks.7.attn.qkv.weight"
@@ -81,7 +82,12 @@ def test_vl_config_synthesis():
                 "num_hidden_layers": 48,
                 "rope_theta": 1000000,
                 "max_position_embeddings": 65536,
-                "rope_scaling": {"interleaved": True, "mrope_interleaved": True, "mrope_section": [24, 20, 20], "type": "default"},
+                "rope_scaling": {
+                    "interleaved": True,
+                    "mrope_interleaved": True,
+                    "mrope_section": [24, 20, 20],
+                    "type": "default",
+                },
                 "num_experts": 128,
             },
             "vision_config": {
@@ -140,7 +146,12 @@ def _tiny_omni_src(src: Path):
             "model_type": "qwen3_omni_moe_text",
             "vocab_size": 32,
             "num_experts": 2,
-            "rope_scaling": {"interleaved": True, "mrope_interleaved": True, "mrope_section": [24, 20, 20], "type": "default"},
+            "rope_scaling": {
+                "interleaved": True,
+                "mrope_interleaved": True,
+                "mrope_section": [24, 20, 20],
+                "type": "default",
+            },
         },
         "vision_config": {"model_type": "x", "image_size": 32, "patch_size": 16},
     }

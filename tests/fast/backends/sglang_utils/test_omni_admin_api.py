@@ -153,9 +153,7 @@ def test_wait_server_healthy_hits_only_requested_probe_paths(monkeypatch):
 
     monkeypatch.setattr("requests.Session", _FakeSession)
 
-    _wait_server_healthy(
-        base_url="http://x:1", api_key=None, is_process_alive=lambda: True, probe_paths=("health",)
-    )
+    _wait_server_healthy(base_url="http://x:1", api_key=None, is_process_alive=lambda: True, probe_paths=("health",))
 
     assert seen == ["http://x:1/health"]
 

@@ -40,7 +40,9 @@ def test_image_and_audio_bundles():
 
     audio = tool.make_audio_bundle(seconds=10.0)
     assert audio["input_features"].shape[1] == 128  # mel bins
-    assert audio["feature_attention_mask"].shape == audio["input_features"].shape[:1] + audio["input_features"].shape[2:]
+    assert (
+        audio["feature_attention_mask"].shape == audio["input_features"].shape[:1] + audio["input_features"].shape[2:]
+    )
 
 
 def test_measure_roundtrip_reports_size_and_integrity():

@@ -15,7 +15,18 @@ from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
 
 # RolloutSamplingParams on the omni server is extra="forbid"; this mirrors its schema
 _OMNI_SAMPLING_KEYS = frozenset(
-    ("temperature", "top_p", "top_k", "min_p", "repetition_penalty", "stop", "stop_token_ids", "seed", "max_new_tokens", "max_tokens")
+    (
+        "temperature",
+        "top_p",
+        "top_k",
+        "min_p",
+        "repetition_penalty",
+        "stop",
+        "stop_token_ids",
+        "seed",
+        "max_new_tokens",
+        "max_tokens",
+    )
 )
 # detok/text-shaping flags: they never reach the token or logprob streams the trainer consumes
 _DETOK_ONLY_KEYS = frozenset(("skip_special_tokens", "no_stop_trim", "spaces_between_special_tokens"))

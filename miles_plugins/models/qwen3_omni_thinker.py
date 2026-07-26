@@ -102,7 +102,9 @@ def compute_audio_embeddings(encoder, input_features, feature_attention_mask, au
         return encoder(input_features, feature_lens=feature_lens).last_hidden_state
 
 
-def scatter_audio_embeddings(hidden, input_ids, audio_embeds, audio_token_id, sp_rank: int = 0, sp_size: int = 1) -> torch.Tensor:
+def scatter_audio_embeddings(
+    hidden, input_ids, audio_embeds, audio_token_id, sp_rank: int = 0, sp_size: int = 1
+) -> torch.Tensor:
     """Replace hidden rows at audio placeholder positions, out of place.
 
     hidden: [s_local, b, h] (mcore embedding layout); input_ids: [b, s_global];
@@ -126,9 +128,9 @@ def scatter_audio_embeddings(hidden, input_ids, audio_embeds, audio_token_id, sp
     )
     if sp_size > 1:
         s_local = hidden.size(0)
-        assert s_local * sp_size == mask.numel(), (
-            f"sequence-parallel chunking mismatch: local {s_local} x sp {sp_size} != global {mask.numel()}"
-        )
+        assert (
+            s_local * sp_size == mask.numel()
+        ), f"sequence-parallel chunking mismatch: local {s_local} x sp {sp_size} != global {mask.numel()}"
         start = sp_rank * s_local
         prior = int(mask[:start].sum())
         mask = mask[start : start + s_local]

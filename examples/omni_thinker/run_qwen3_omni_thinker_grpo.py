@@ -120,8 +120,7 @@ def execute(args: ScriptArgs):
         f"--tensor-model-parallel-size {args.actor_tp} "
         # the audio injection is sequence-parallel aware (contiguous-chunk scatter);
         # mcore requires SP for MoE + TP>1
-        + ("--sequence-parallel " if args.actor_tp > 1 else "")
-        + "--pipeline-model-parallel-size 1 "
+        + ("--sequence-parallel " if args.actor_tp > 1 else "") + "--pipeline-model-parallel-size 1 "
         "--context-parallel-size 1 "
         f"--expert-model-parallel-size {args.actor_tp} "
         "--expert-tensor-parallel-size 1 "
@@ -159,9 +158,7 @@ def execute(args: ScriptArgs):
         "--hidden-dropout 0.0 "
         # mcore requires SP for MoE+TP>1, and the audio injection needs SP off, so the
         # debug tier runs TP1 (bf16 grad accum keeps 2xH200 within memory)
-        + ("" if debug_minimal else "--accumulate-allreduce-grads-in-fp32 ")
-        + 
-        "--attention-softmax-in-fp32 "
+        + ("" if debug_minimal else "--accumulate-allreduce-grads-in-fp32 ") + "--attention-softmax-in-fp32 "
         "--attention-backend flash "
         "--actor-num-nodes 1 "
         f"--actor-num-gpus-per-node {args.actor_tp} "

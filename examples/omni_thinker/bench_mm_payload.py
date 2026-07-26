@@ -106,10 +106,15 @@ def main() -> None:
     args = parser.parse_args()
 
     rows = [("image", f"{args.resolution}px", make_image_bundle(args.resolution, args.resolution))]
-    rows += [(f"video", f"{n}f@{args.resolution}px", make_video_bundle(n, args.resolution, args.resolution)) for n in args.frames]
+    rows += [
+        ("video", f"{n}f@{args.resolution}px", make_video_bundle(n, args.resolution, args.resolution))
+        for n in args.frames
+    ]
     rows += [("audio", f"{s:.0f}s", make_audio_bundle(s)) for s in args.seconds]
 
-    header = f"{'modality':8s} {'case':12s} {'raw_MB':>8s} {'json_MB':>8s} {'ser_ms':>8s} {'dump_ms':>8s} {'deser_ms':>9s}"
+    header = (
+        f"{'modality':8s} {'case':12s} {'raw_MB':>8s} {'json_MB':>8s} {'ser_ms':>8s} {'dump_ms':>8s} {'deser_ms':>9s}"
+    )
     print(header)
     for modality, case, tensors in rows:
         r = measure_roundtrip(tensors, server=args.server)

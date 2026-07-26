@@ -237,9 +237,14 @@ def pseudo_vl_to_omni_server_name(name: str) -> str | None:
 
 
 def unfreeze_provider(provider) -> None:
-    """Some megatron-bridge versions default Qwen3VLMoEModelProvider to a frozen LM;
-    RL must train the backbone, so force-clear every freeze knob that exists."""
-    for field in ("freeze_language_model", "freeze_vision_model", "freeze_vision_projection"):
-        if getattr(provider, field, False):
-            logger.warning(f"pseudo-VL provider had {field}=True; clearing it for RL training")
-            setattr(provider, field, False)
+    """RL trains the text backbone; the visual tower + projection stay frozen (v1), which
+    keeps rollout/training vision features identical and makes text-only weight sync
+    sufficient. Some megatron-bridge versions default freeze_language_model=True, which
+    would silently train nothing but mergers."""
+    if getattr(provider, "freeze_language_model", False):
+        logger.warning("pseudo-VL provider had freeze_language_model=True; clearing it for RL training")
+        provider.freeze_language_model = False
+    for field in ("freeze_vision_model", "freeze_vision_projection"):
+        if hasattr(provider, field) and not getattr(provider, field):
+            logger.info(f"freezing {field} (v1 trains the text backbone only)")
+            setattr(provider, field, True)

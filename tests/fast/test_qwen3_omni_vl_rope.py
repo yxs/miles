@@ -181,3 +181,24 @@ def test_resolve_position_id_per_seconds(tmp_path):
     (tmp_path / "config.json").write_text(json.dumps({}))
     with pytest.raises(AssertionError, match="omni_sideband"):
         resolve_position_id_per_seconds(tmp_path)
+
+
+def test_rename_named_weights_for_omni_server_skips_frozen_visual():
+    from miles.backends.megatron_utils.update_weight.hf_weight_iterator_bridge import (
+        rename_named_weights_for_omni_server,
+    )
+
+    named = [
+        ("lm_head.weight", "W0", "m0"),
+        ("model.language_model.layers.0.self_attn.q_proj.weight", "W1", "m1"),
+        ("model.visual.blocks.0.attn.qkv.weight", "W2", "m2"),
+        ("model.language_model.layers.0.mlp.experts.gate_up_proj", "W3", "m3"),
+    ]
+
+    out = list(rename_named_weights_for_omni_server(iter(named)))
+
+    assert out == [
+        ("thinker.lm_head.weight", "W0", "m0"),
+        ("thinker.model.layers.0.self_attn.q_proj.weight", "W1", "m1"),
+        ("thinker.model.layers.0.mlp.experts.gate_up_proj", "W3", "m3"),
+    ]

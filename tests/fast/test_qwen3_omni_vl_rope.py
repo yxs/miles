@@ -140,6 +140,41 @@ def test_omni_aware_rope_fails_loud_without_seconds():
         omni_aware(MERGE, IMG, VID, VSTART, ids, None, torch.tensor(grids), None)
 
 
+def test_pseudo_vl_to_omni_server_names_roundtrip_the_extraction_map():
+    import importlib.util
+    from pathlib import Path
+
+    from miles_plugins.models.qwen3_omni_thinker_vl import pseudo_vl_to_omni_server_name
+
+    repo = Path(__file__).resolve().parents[2]
+    spec = importlib.util.spec_from_file_location("extract_tool", repo / "tools" / "extract_qwen3_omni_thinker.py")
+    tool = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(tool)
+
+    omni_names = [
+        "thinker.lm_head.weight",
+        "thinker.model.embed_tokens.weight",
+        "thinker.model.layers.3.self_attn.q_proj.weight",
+        "thinker.visual.patch_embed.proj.weight",
+        "thinker.visual.blocks.7.attn.qkv.weight",
+        "thinker.visual.merger.ln_q.weight",
+        "thinker.visual.merger.mlp.0.bias",
+        "thinker.visual.merger.mlp.2.weight",
+        "thinker.visual.merger_list.1.ln_q.weight",
+        "thinker.visual.merger_list.2.mlp.2.bias",
+    ]
+    for omni in omni_names:
+        vl = tool.map_thinker_param_name_vl(omni)
+        assert pseudo_vl_to_omni_server_name(vl) == omni, f"{omni} -> {vl} did not roundtrip"
+
+    # fused experts map onto the sglang fused loader names (thinker. + model.)
+    assert (
+        pseudo_vl_to_omni_server_name("model.language_model.layers.0.mlp.experts.gate_up_proj")
+        == "thinker.model.layers.0.mlp.experts.gate_up_proj"
+    )
+    assert pseudo_vl_to_omni_server_name("not_a_model_tensor") is None
+
+
 def test_resolve_position_id_per_seconds(tmp_path):
     from miles_plugins.models.qwen3_omni_thinker_vl import resolve_position_id_per_seconds
 

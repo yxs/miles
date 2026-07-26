@@ -166,6 +166,10 @@ def get_model_provider_func(
         bridge = AutoBridge.from_hf_pretrained(args.hf_checkpoint, trust_remote_code=True)
         provider = bridge.to_megatron_provider(load_weights=False)
         _apply_bridge_runtime_config(provider, args)
+        if getattr(args, "qwen3_omni_vl", False):
+            from miles_plugins.models.qwen3_omni_thinker_vl import unfreeze_provider
+
+            unfreeze_provider(provider)
         provider.finalize()
 
         def wrapped_bridge_provider(
@@ -335,6 +339,10 @@ def _maybe_install_omni_audio_injection(args: argparse.Namespace, model) -> None
         from miles_plugins.models.qwen3_omni_thinker import install_audio_injection
 
         install_audio_injection(model, args)
+    if getattr(args, "qwen3_omni_vl", False):
+        from miles_plugins.models.qwen3_omni_thinker_vl import install_omni_vl
+
+        install_omni_vl(args)
 
 
 def _maybe_install_witness(

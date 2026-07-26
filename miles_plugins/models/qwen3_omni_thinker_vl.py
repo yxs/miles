@@ -150,6 +150,7 @@ def install_omni_vl(args) -> None:
     """Install the omni video rope override + video_second_per_grid pop on the bridge model."""
     import importlib
 
+    import miles_plugins.megatron_bridge  # noqa: F401  installs the packed-mrope patch first
     import miles_plugins.models.qwen3_vl as qwen3_vl_patch
 
     model_mod = importlib.import_module("megatron.bridge.models.qwen_vl.modelling_qwen3_vl.model")
@@ -181,6 +182,39 @@ def install_omni_vl(args) -> None:
     Qwen3VLModel.forward = forward
     setattr(model_mod, _PATCHED, True)
     logger.info(f"omni VL patch installed (position_id_per_seconds={position_id_per_seconds})")
+
+
+_VL_TO_OMNI_MERGER = (
+    ("model.visual.merger.norm.", "thinker.visual.merger.ln_q."),
+    ("model.visual.merger.linear_fc1.", "thinker.visual.merger.mlp.0."),
+    ("model.visual.merger.linear_fc2.", "thinker.visual.merger.mlp.2."),
+)
+
+
+def pseudo_vl_to_omni_server_name(name: str) -> str | None:
+    """Bridge-exported pseudo-VL HF name -> the omni server's thinker param name.
+
+    The reverse of the extraction rename map, for pushing trainer weights into a server
+    that runs the omni-named model. Returns None for tensors the server has no slot for.
+    Expert tensors stay fused (the sglang omni loader consumes hub-layout gate_up_proj /
+    down_proj directly).
+    """
+    import re as _re
+
+    if name == "lm_head.weight":
+        return "thinker.lm_head.weight"
+    for vl_prefix, omni_prefix in _VL_TO_OMNI_MERGER:
+        if name.startswith(vl_prefix):
+            return omni_prefix + name[len(vl_prefix) :]
+    match = _re.match(r"^model\.visual\.deepstack_merger_list\.(\d+)\.(norm|linear_fc1|linear_fc2)\.(.+)$", name)
+    if match:
+        part = {"norm": "ln_q", "linear_fc1": "mlp.0", "linear_fc2": "mlp.2"}[match.group(2)]
+        return f"thinker.visual.merger_list.{match.group(1)}.{part}.{match.group(3)}"
+    if name.startswith("model.visual."):
+        return "thinker." + name[len("model.") :]
+    if name.startswith("model.language_model."):
+        return "thinker.model." + name[len("model.language_model.") :]
+    return None
 
 
 def unfreeze_provider(provider) -> None:

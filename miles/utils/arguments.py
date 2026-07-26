@@ -845,6 +845,16 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 ),
             )
             parser.add_argument(
+                "--qwen3-omni-vl",
+                action="store_true",
+                default=False,
+                help=(
+                    "Train the pseudo-Qwen3-VL omni thinker (tools/extract_qwen3_omni_thinker.py "
+                    "--variant vl): installs the omni TM-RoPE video override on the bridge model "
+                    "and clears provider freeze knobs. See miles_plugins/models/qwen3_omni_thinker_vl.py."
+                ),
+            )
+            parser.add_argument(
                 "--qwen3-omni-audio-encoder-path",
                 type=str,
                 default=None,

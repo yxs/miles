@@ -108,11 +108,19 @@ def _make_omni_aware_rope_index(orig_get_rope_index, position_id_per_seconds: fl
     grid slices it hands us).
     """
 
-    def omni_aware(merge, img_id, vid_id, vstart, input_ids, image_grid_thw=None, video_grid_thw=None, attention_mask=None):
+    def omni_aware(
+        merge, img_id, vid_id, vstart, input_ids, image_grid_thw=None, video_grid_thw=None, attention_mask=None
+    ):
         if video_grid_thw is None or video_grid_thw.numel() == 0:
             return orig_get_rope_index(
-                merge, img_id, vid_id, vstart, input_ids,
-                image_grid_thw=image_grid_thw, video_grid_thw=video_grid_thw, attention_mask=attention_mask,
+                merge,
+                img_id,
+                vid_id,
+                vstart,
+                input_ids,
+                image_grid_thw=image_grid_thw,
+                video_grid_thw=video_grid_thw,
+                attention_mask=attention_mask,
             )
         seconds_all = getattr(_tls, "video_second_per_grid", None)
         assert seconds_all is not None, (
@@ -122,11 +130,20 @@ def _make_omni_aware_rope_index(orig_get_rope_index, position_id_per_seconds: fl
         cursor = getattr(_tls, "video_cursor", 0)
         n_videos = video_grid_thw.shape[0]
         seconds = seconds_all[cursor : cursor + n_videos]
-        assert seconds.numel() == n_videos, f"video_second_per_grid exhausted: {cursor=} {n_videos=} {seconds_all.numel()=}"
+        assert (
+            seconds.numel() == n_videos
+        ), f"video_second_per_grid exhausted: {cursor=} {n_videos=} {seconds_all.numel()=}"
         _tls.video_cursor = cursor + n_videos
         positions = omni_video_rope_index(
-            merge, img_id, vid_id, vstart, input_ids,
-            image_grid_thw, video_grid_thw, seconds, position_id_per_seconds,
+            merge,
+            img_id,
+            vid_id,
+            vstart,
+            input_ids,
+            image_grid_thw,
+            video_grid_thw,
+            seconds,
+            position_id_per_seconds,
         )
         return positions, None
 
@@ -162,7 +179,9 @@ def install_omni_vl(args) -> None:
     orig_build = qwen3_vl_patch._build_packed_positions
 
     def build_with_omni_video(model, parsed, kwargs, orig_get_rope_index):
-        return orig_build(model, parsed, kwargs, _make_omni_aware_rope_index(orig_get_rope_index, position_id_per_seconds))
+        return orig_build(
+            model, parsed, kwargs, _make_omni_aware_rope_index(orig_get_rope_index, position_id_per_seconds)
+        )
 
     qwen3_vl_patch._build_packed_positions = build_with_omni_video
 

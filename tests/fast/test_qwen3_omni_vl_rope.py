@@ -4,16 +4,11 @@ from types import SimpleNamespace
 
 import pytest
 import torch
-
 from tests.ci.ci_register import register_cpu_ci
 
 register_cpu_ci(est_time=30, suite="stage-a-cpu", labels=[])
 
-from miles_plugins.models.qwen3_omni_thinker_vl import (
-    _make_omni_aware_rope_index,
-    _tls,
-    omni_video_rope_index,
-)
+from miles_plugins.models.qwen3_omni_thinker_vl import _make_omni_aware_rope_index, _tls, omni_video_rope_index
 
 MERGE = 2
 IMG, VID, VSTART, VEND = 151655, 151656, 151652, 151653
@@ -93,9 +88,9 @@ def test_omni_video_rope_matches_hf_reference(segments):
     )
 
     assert ours.shape == expected.shape, f"{ours.shape=} {expected.shape=}"
-    assert torch.allclose(ours.float(), expected.float()), (
-        f"positions diverge from the HF omni reference for {segments}"
-    )
+    assert torch.allclose(
+        ours.float(), expected.float()
+    ), f"positions diverge from the HF omni reference for {segments}"
 
 
 def test_omni_aware_rope_delegates_images_and_consumes_seconds_in_order():
@@ -176,9 +171,9 @@ def test_pseudo_vl_to_omni_server_names_roundtrip_the_extraction_map():
 
 
 def test_resolve_position_id_per_seconds(tmp_path):
-    from miles_plugins.models.qwen3_omni_thinker_vl import resolve_position_id_per_seconds
-
     import json
+
+    from miles_plugins.models.qwen3_omni_thinker_vl import resolve_position_id_per_seconds
 
     (tmp_path / "config.json").write_text(json.dumps({"omni_sideband": {"position_id_per_seconds": 13}}))
     assert resolve_position_id_per_seconds(tmp_path) == 13.0

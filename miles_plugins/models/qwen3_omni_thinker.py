@@ -102,23 +102,37 @@ def compute_audio_embeddings(encoder, input_features, feature_attention_mask, au
         return encoder(input_features, feature_lens=feature_lens).last_hidden_state
 
 
-def scatter_audio_embeddings(hidden, input_ids, audio_embeds, audio_token_id) -> torch.Tensor:
+def scatter_audio_embeddings(hidden, input_ids, audio_embeds, audio_token_id, sp_rank: int = 0, sp_size: int = 1) -> torch.Tensor:
     """Replace hidden rows at audio placeholder positions, out of place.
 
-    hidden: [s, b, h] (mcore embedding layout); input_ids: [b, s]; audio_embeds: [n, h].
-    Requires the packed b == 1 layout: masked_scatter fills s-major, which would
-    interleave samples for b > 1.
+    hidden: [s_local, b, h] (mcore embedding layout); input_ids: [b, s_global];
+    audio_embeds: [n_global, h]. Requires the packed b == 1 layout: masked_scatter fills
+    s-major, which would interleave samples for b > 1.
+
+    With sequence parallelism the embedding output is the rank's contiguous chunk
+    (s_local = s_global / sp_size, rows [sp_rank*s_local, (sp_rank+1)*s_local)); the
+    mask and the encoder outputs are sliced to that window, so every rank scatters
+    exactly its own audio rows.
     """
     assert hidden.dim() == 3 and input_ids.dim() == 2, f"{hidden.shape=} {input_ids.shape=}"
     assert (
         hidden.size(1) == 1 and input_ids.size(0) == 1
     ), f"audio injection requires the packed [1, s] layout, got {input_ids.shape}"
-    mask = input_ids[0] == audio_token_id  # [s]
+    mask = input_ids[0] == audio_token_id  # [s_global]
     num_positions = int(mask.sum())
     assert num_positions == audio_embeds.size(0), (
         f"audio placeholder/embedding mismatch: {num_positions} audio tokens in input_ids "
         f"vs {audio_embeds.size(0)} encoder outputs"
     )
+    if sp_size > 1:
+        s_local = hidden.size(0)
+        assert s_local * sp_size == mask.numel(), (
+            f"sequence-parallel chunking mismatch: local {s_local} x sp {sp_size} != global {mask.numel()}"
+        )
+        start = sp_rank * s_local
+        prior = int(mask[:start].sum())
+        mask = mask[start : start + s_local]
+        audio_embeds = audio_embeds[prior : prior + int(mask.sum())]
     audio_embeds = audio_embeds.to(device=hidden.device, dtype=hidden.dtype)
     return hidden.masked_scatter(mask.view(-1, 1, 1).to(hidden.device), audio_embeds)
 
@@ -157,12 +171,16 @@ def install_audio_injection(model, args, encoder_loader=None, audio_token_id: in
 
         assert not fargs, "audio injection expects keyword-only forward calls"
         assert "decoder_input" not in kwargs, "decoder_input already set upstream"
-        assert not getattr(
-            args, "sequence_parallel", False
-        ), "audio injection scatters full-sequence embeddings; run with sequence-parallel off"
         assert getattr(args, "context_parallel_size", 1) == 1, "audio injection requires context_parallel_size == 1"
 
         input_ids = kwargs["input_ids"]
+        # with sequence parallelism the embedding output is this rank's contiguous chunk
+        sp_rank, sp_size = 0, 1
+        if getattr(args, "sequence_parallel", False) and getattr(args, "tensor_model_parallel_size", 1) > 1:
+            from megatron.core import parallel_state as mpu
+
+            sp_rank = mpu.get_tensor_model_parallel_rank()
+            sp_size = mpu.get_tensor_model_parallel_world_size()
         hidden = model.embedding(input_ids=input_ids, position_ids=kwargs.get("position_ids"))
         encoder = encoder_loader(device=hidden.device, dtype=hidden.dtype)
         audio_embeds = compute_audio_embeddings(
@@ -171,7 +189,9 @@ def install_audio_injection(model, args, encoder_loader=None, audio_token_id: in
             audio_kwargs.get("feature_attention_mask"),
             audio_kwargs.get("audio_feature_lengths"),
         )
-        kwargs["decoder_input"] = scatter_audio_embeddings(hidden, input_ids, audio_embeds, audio_token_id)
+        kwargs["decoder_input"] = scatter_audio_embeddings(
+            hidden, input_ids, audio_embeds, audio_token_id, sp_rank=sp_rank, sp_size=sp_size
+        )
         return orig_forward(**kwargs)
 
     model.forward = forward

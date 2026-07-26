@@ -229,19 +229,33 @@ def test_install_non_pre_process_swallows_audio_kwargs(tiny_encoder):
     assert "decoder_input" not in model.captured
 
 
-def test_install_rejects_sequence_parallel_with_audio(tiny_encoder):
-    model = _StubGPT()
-    _install(model, tiny_encoder, sequence_parallel=True)
-    input_features, feature_attention_mask, n_tokens = _audio_batch(tiny_encoder)
-    with pytest.raises(AssertionError, match="sequence.parallel"):
-        model.forward(
-            input_ids=_packed_input_ids([n_tokens]),
-            input_features=input_features,
-            feature_attention_mask=feature_attention_mask,
-        )
-    # text-only batches stay allowed under SP
-    model.forward(input_ids=_packed_input_ids([0]))
-    assert model.captured is not None
+def test_scatter_sequence_parallel_chunks_reconstruct_full_result():
+    input_ids = _packed_input_ids([2, 3])
+    s = input_ids.size(1)
+    if s % 2:  # pad to an even split like miles' tp-multiple padding does
+        input_ids = torch.cat([input_ids, torch.tensor([[7]])], dim=1)
+        s += 1
+    torch.manual_seed(4)
+    hidden_full = torch.randn(s, 1, HIDDEN)
+    audio_embeds = -torch.arange(1, 5 * HIDDEN + 1, dtype=torch.float32).reshape(5, HIDDEN)
+
+    full = scatter_audio_embeddings(hidden_full, input_ids, audio_embeds, AUDIO_TOKEN_ID)
+    chunk = s // 2
+    part0 = scatter_audio_embeddings(
+        hidden_full[:chunk], input_ids, audio_embeds, AUDIO_TOKEN_ID, sp_rank=0, sp_size=2
+    )
+    part1 = scatter_audio_embeddings(
+        hidden_full[chunk:], input_ids, audio_embeds, AUDIO_TOKEN_ID, sp_rank=1, sp_size=2
+    )
+
+    assert torch.equal(torch.cat([part0, part1], dim=0), full)
+
+
+def test_scatter_sequence_parallel_rejects_bad_chunking():
+    input_ids = _packed_input_ids([2])
+    hidden_local = torch.zeros(3, 1, HIDDEN)  # 3 * 2 != seq len
+    with pytest.raises(AssertionError, match="chunking"):
+        scatter_audio_embeddings(hidden_local, input_ids, torch.zeros(2, HIDDEN), AUDIO_TOKEN_ID, sp_rank=0, sp_size=2)
 
 
 # ------------------------------- checkpoint loader -------------------------------

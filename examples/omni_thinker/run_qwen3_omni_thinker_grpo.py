@@ -118,8 +118,10 @@ def execute(args: ScriptArgs):
 
     perf_args = (
         f"--tensor-model-parallel-size {args.actor_tp} "
-        # no --sequence-parallel: audio injection scatters full-sequence embeddings
-        "--pipeline-model-parallel-size 1 "
+        # the audio injection is sequence-parallel aware (contiguous-chunk scatter);
+        # mcore requires SP for MoE + TP>1
+        + ("--sequence-parallel " if args.actor_tp > 1 else "")
+        + "--pipeline-model-parallel-size 1 "
         "--context-parallel-size 1 "
         f"--expert-model-parallel-size {args.actor_tp} "
         "--expert-tensor-parallel-size 1 "
@@ -127,7 +129,7 @@ def execute(args: ScriptArgs):
         "--recompute-method uniform "
         "--recompute-num-layers 1 "
         "--use-dynamic-batch-size "
-        "--max-tokens-per-gpu 9216 "
+        f"--max-tokens-per-gpu {2048 if debug_minimal else 9216} "
         "--optimizer-cpu-offload "
         "--overlap-cpu-optimizer-d2h-h2d "
         "--use-precision-aware-optimizer "

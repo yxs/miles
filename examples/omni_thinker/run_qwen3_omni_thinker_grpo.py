@@ -6,6 +6,12 @@ frozen-audio-tower embeddings at placeholder positions (--qwen3-omni-audio-encod
 
 Weight sync: `--sync-mode skip` freezes the server (off-policy debug; TIS absorbs the gap),
 `--sync-mode distributed` pushes thinker.* weights over NCCL each step (on-policy).
+
+On-policy requires the server co-located with the trainer (same container / IPC+PID domain)
+and launched with NCCL_CUMEM_ENABLE=0: miles pins the trainer to 0 (matching stock sglang's
+engine entrypoint) but the sglang-omni server entry does not set it, and a cuMem/legacy-IPC
+transport mismatch fails the first broadcast. Split-container deployments fail earlier, in
+the NCCL data plane (ncclSystemError).
 """
 
 import os
@@ -156,8 +162,7 @@ def execute(args: ScriptArgs):
     misc_args = (
         "--attention-dropout 0.0 "
         "--hidden-dropout 0.0 "
-        # mcore requires SP for MoE+TP>1, and the audio injection needs SP off, so the
-        # debug tier runs TP1 (bf16 grad accum keeps 2xH200 within memory)
+        # debug tier keeps grad accum in bf16 so the TP2 actor fits 2xH200 next to the server
         + ("" if debug_minimal else "--accumulate-allreduce-grads-in-fp32 ") + "--attention-softmax-in-fp32 "
         "--attention-backend flash "
         "--actor-num-nodes 1 "

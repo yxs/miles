@@ -51,6 +51,13 @@ def test_convert_row_reward_roundtrip_via_gpqa():
     assert compute_gpqa_reward("Answer: B", record["label"], metadata=record["metadata"]) == 0.0
 
 
+def _make_audio_root(tmp_path):
+    root = tmp_path / "avqa"
+    (root / "VGG10000").mkdir(parents=True)
+    (root / "VGG10000" / "-HIPq7T3eFI_11.wav").touch()
+    return root
+
+
 def test_convert_file_writes_jsonl(tmp_path):
     src = tmp_path / "train_r1aqa_line.json"
     with open(src, "w") as f:
@@ -58,7 +65,7 @@ def test_convert_file_writes_jsonl(tmp_path):
         f.write(json.dumps({**ROW, "id": 185, "answer": 0}) + "\n")
 
     out = tmp_path / "avqa.jsonl"
-    n = _load_tool().convert_file(src, out, audio_root="/data/avqa", max_samples=None)
+    n = _load_tool().convert_file(src, out, audio_root=_make_audio_root(tmp_path), max_samples=None)
 
     assert n == 2
     lines = [json.loads(line) for line in open(out)]
@@ -73,7 +80,22 @@ def test_convert_file_respects_max_samples(tmp_path):
             f.write(json.dumps({**ROW, "id": i}) + "\n")
 
     out = tmp_path / "avqa.jsonl"
-    n = _load_tool().convert_file(src, out, audio_root="/data/avqa", max_samples=3)
+    n = _load_tool().convert_file(src, out, audio_root=_make_audio_root(tmp_path), max_samples=3)
 
     assert n == 3
     assert sum(1 for _ in open(out)) == 3
+
+
+def test_convert_file_skips_missing_audio_without_eating_budget(tmp_path):
+    src = tmp_path / "train_r1aqa_line.json"
+    hole = {**ROW, "id": 0, "answer": 0, "audio_path": "./Joysw909/AVQA/VGG10000/deleted_clip.wav"}
+    with open(src, "w") as f:
+        f.write(json.dumps(hole) + "\n")
+        f.write(json.dumps(ROW) + "\n")
+
+    out = tmp_path / "avqa.jsonl"
+    n = _load_tool().convert_file(src, out, audio_root=_make_audio_root(tmp_path), max_samples=1)
+
+    assert n == 1
+    lines = [json.loads(line) for line in open(out)]
+    assert lines[0]["label"] == "C"  # the hole row (label A) was skipped, budget filled by the next valid row

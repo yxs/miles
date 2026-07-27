@@ -39,16 +39,24 @@ def convert_row(row: dict, audio_root: str) -> dict:
 
 
 def convert_file(src, dst, audio_root: str, max_samples: int | None = None) -> int:
-    n = 0
+    n = skipped = 0
     with open(src) as fin, open(dst, "w") as fout:
         for line in fin:
             if not line.strip():
                 continue
             if max_samples is not None and n >= max_samples:
                 break
-            fout.write(json.dumps(convert_row(json.loads(line), audio_root)) + "\n")
+            record = convert_row(json.loads(line), audio_root)
+            # the HF mirror has holes (delisted VGGSound clips); a missing wav must not
+            # produce a row that crashes rollout preprocessing at startup
+            if not all(Path(audio).exists() for audio in record["audios"]):
+                skipped += 1
+                continue
+            fout.write(json.dumps(record) + "\n")
             n += 1
     assert n > 0, f"no rows converted from {src}"
+    if skipped:
+        print(f"[warn] skipped {skipped} rows with missing audio files")
     return n
 
 

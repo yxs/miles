@@ -12,6 +12,22 @@ from .common import get_atomic_update_groups
 from .hf_weight_iterator_base import HfWeightIteratorBase
 
 
+def rename_named_weights_for_omni_server(named_weights):
+    """Pseudo-VL export names -> the omni server's thinker.* namespace.
+
+    The frozen visual tower is skipped (its weights never change and the thinker stage
+    has no slot for them); every text/lm_head tensor must map, or we fail loud.
+    """
+    from miles_plugins.models.qwen3_omni_thinker_vl import pseudo_vl_to_omni_server_name
+
+    for hf_name, weight, megatron_name in named_weights:
+        if hf_name.startswith("model.visual."):
+            continue
+        omni_name = pseudo_vl_to_omni_server_name(hf_name)
+        assert omni_name is not None, f"no omni-server slot for exported tensor {hf_name}"
+        yield omni_name, weight, megatron_name
+
+
 class HfWeightIteratorBridge(HfWeightIteratorBase):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -64,6 +80,9 @@ class HfWeightIteratorBridge(HfWeightIteratorBase):
                 named_weights = ((h, w, m) for h, w, m in named_weights if not is_lora_weight_name(h))
             elif weight_type == "lora":
                 named_weights = ((h, w, m) for h, w, m in named_weights if is_lora_weight_name(h))
+
+            if getattr(self.args, "qwen3_omni_vl", False):
+                named_weights = rename_named_weights_for_omni_server(named_weights)
 
             groups = get_atomic_update_groups(self.args, self.model_name)
             units = _stream_atomic_units(named_weights, groups)

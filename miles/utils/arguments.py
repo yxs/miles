@@ -600,6 +600,27 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 help="Address and ports of the external engines.",
             )
             parser.add_argument(
+                "--rollout-external-admin-api",
+                choices=["sglang", "sglang-omni"],
+                default="sglang",
+                help=(
+                    "Admin/weight-update dialect of the external engines. 'sglang-omni' servers have no "
+                    "/flush_cache or /begin|end_weight_update routes and instead quiesce+flush internally "
+                    "around /update_weights_from_distributed."
+                ),
+            )
+            parser.add_argument(
+                "--rollout-weight-update-stages",
+                type=str,
+                default=None,
+                nargs="+",
+                help=(
+                    "Stage names to scope /init_weights_update_group, /update_weights_from_distributed and "
+                    "/destroy_weights_update_group to, for multi-stage (omni) servers; unset lets the server "
+                    "fan the op out to every registered stage, which breaks the NCCL world-size accounting."
+                ),
+            )
+            parser.add_argument(
                 "--update-weight-transfer-mode",
                 choices=["broadcast", "p2p", "disk-delta"],
                 default="broadcast",
@@ -821,6 +842,26 @@ def get_miles_extra_args_provider(add_custom_arguments=None):
                 default=None,
                 help=(
                     'JSON string for multimodal data mapping media types to data keys. Example: \'{"image": "image_file"}\''
+                ),
+            )
+            parser.add_argument(
+                "--qwen3-omni-vl",
+                action="store_true",
+                default=False,
+                help=(
+                    "Train the pseudo-Qwen3-VL omni thinker (tools/extract_qwen3_omni_thinker.py "
+                    "--variant vl): installs the omni TM-RoPE video override on the bridge model "
+                    "and clears provider freeze knobs. See miles_plugins/models/qwen3_omni_thinker_vl.py."
+                ),
+            )
+            parser.add_argument(
+                "--qwen3-omni-audio-encoder-path",
+                type=str,
+                default=None,
+                help=(
+                    "Path to the full Qwen3-Omni HF checkpoint; enables frozen-audio-tower embedding "
+                    "injection into the extracted text-backbone trainer (audio-input RL). "
+                    "See miles_plugins/models/qwen3_omni_thinker.py."
                 ),
             )
             parser.add_argument("--metadata-key", type=str, default="metadata", help="JSON dataset key")

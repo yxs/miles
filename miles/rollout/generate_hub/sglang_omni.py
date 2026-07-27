@@ -12,6 +12,14 @@ matching the trainer recompute convention.
 """
 
 from miles.rollout.base_types import GenerateFnInput, GenerateFnOutput
+from miles.rollout.generate_utils.generate_endpoint_utils import (
+    compute_prompt_ids_from_sample,
+    compute_request_payload,
+    compute_routing_headers,
+    update_sample_from_response,
+)
+from miles.utils.http_utils import post
+from miles.utils.types import Sample
 
 # RolloutSamplingParams on the omni server is extra="forbid"; this mirrors its schema
 _OMNI_SAMPLING_KEYS = frozenset(
@@ -30,14 +38,6 @@ _OMNI_SAMPLING_KEYS = frozenset(
 )
 # detok/text-shaping flags: they never reach the token or logprob streams the trainer consumes
 _DETOK_ONLY_KEYS = frozenset(("skip_special_tokens", "no_stop_trim", "spaces_between_special_tokens"))
-from miles.rollout.generate_utils.generate_endpoint_utils import (
-    compute_prompt_ids_from_sample,
-    compute_request_payload,
-    compute_routing_headers,
-    update_sample_from_response,
-)
-from miles.utils.http_utils import post
-from miles.utils.types import Sample
 
 
 async def generate(input: GenerateFnInput) -> GenerateFnOutput:

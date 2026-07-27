@@ -185,6 +185,9 @@ def install_audio_injection(model, args, encoder_loader=None, audio_token_id: in
             sp_size = mpu.get_tensor_model_parallel_world_size()
         hidden = model.embedding(input_ids=input_ids, position_ids=kwargs.get("position_ids"))
         encoder = encoder_loader(device=hidden.device, dtype=hidden.dtype)
+        # NOTE: every TP rank re-encodes the whole audio and then scatters only its own SP
+        # chunk -> TP_size x redundant tower forward. Fine here (frozen ~0.6B tower, small
+        # audio); if audio grows or TP scales, encode once on rank 0 and broadcast.
         audio_embeds = compute_audio_embeddings(
             encoder,
             input_features,

@@ -323,21 +323,33 @@ def get_batch(
     # Process multimodal training tensors if present
     multimodal_train_inputs = batch.get("multimodal_train_inputs", None)
     if multimodal_train_inputs is not None:
-        multimodal_data = {}  # key -> concatenated tensor
+        multimodal_lists = {}  # key -> per-sequence tensors
         multimodal_num_items = {}  # key -> list of item counts per sequence
         for mm_input_dict in multimodal_train_inputs:
             if mm_input_dict is not None:
                 for key, mm_tensor in mm_input_dict.items():
-                    if key not in multimodal_data:
-                        multimodal_data[key] = mm_tensor
-                        multimodal_num_items[key] = [mm_tensor.size(0)]
-                    else:
-                        multimodal_data[key] = torch.cat([multimodal_data[key], mm_tensor], dim=0)
-                        multimodal_num_items[key].append(mm_tensor.size(0))
-        batch["multimodal_train_inputs"] = multimodal_data
+                    multimodal_lists.setdefault(key, []).append(mm_tensor)
+                    multimodal_num_items.setdefault(key, []).append(mm_tensor.size(0))
+        batch["multimodal_train_inputs"] = {
+            key: _concat_multimodal_tensors(key, tensors) for key, tensors in multimodal_lists.items()
+        }
         batch["multimodal_num_items"] = multimodal_num_items
 
     return batch
+
+
+# Audio processor tensors have a per-sample mel-frame time axis (last dim); samples in one
+# micro-batch differ, so right-pad to the max before dim-0 concat. Zero padding is exactly the
+# HF processor's own within-sample padding scheme: feature_lens = feature_attention_mask.sum(-1)
+# stays correct, and the encoder never reads the padded frames.
+_PAD_LAST_DIM_MM_KEYS = ("input_features", "feature_attention_mask")
+
+
+def _concat_multimodal_tensors(key: str, tensors: list[torch.Tensor]) -> torch.Tensor:
+    if key in _PAD_LAST_DIM_MM_KEYS:
+        max_len = max(t.size(-1) for t in tensors)
+        tensors = [F.pad(t, (0, max_len - t.size(-1)), value=0) for t in tensors]
+    return torch.cat(tensors, dim=0)
 
 
 class DataIterator:

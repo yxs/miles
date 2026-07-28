@@ -1,8 +1,9 @@
 """GRPO on the Qwen3-Omni-30B-A3B thinker with audio-input AVQA (MCQ reward).
 
-Topology: rollout runs on a standalone sglang-omni text server (external engines; miles
-launches nothing locally); the trainer holds the extracted text backbone and injects
-frozen-audio-tower embeddings at placeholder positions (--qwen3-omni-audio-encoder-path).
+Topology: rollout runs on a standalone sglang-omni text worker registered behind an
+sglang-omni router (external engines; miles launches nothing locally); the trainer holds
+the extracted text backbone and injects frozen-audio-tower embeddings at placeholder
+positions (--qwen3-omni-audio-encoder-path).
 
 Weight sync: `--sync-mode skip` freezes the server (off-policy debug; TIS absorbs the gap),
 `--sync-mode distributed` pushes thinker.* weights over NCCL each step (on-policy).
@@ -38,6 +39,8 @@ class ScriptArgs(U.ExecuteTrainConfig):
     megatron_path: str = "/root/Megatron-LM"
     omni_server_ip: str = "127.0.0.1"
     omni_server_port: int = 30000
+    omni_router_ip: str = "127.0.0.1"
+    omni_router_port: int = 30001
     omni_server_tp: int = 4  # TP size of the external omni server (NCCL group world_size = tp + 1)
     avqa_max_samples: int = 5120
     extra_args: str = ""
@@ -96,9 +99,8 @@ def execute(args: ScriptArgs):
         "--rollout-temperature 1 "
         f"--global-batch-size {32 if debug_minimal else 256} "
         "--balance-data "
-        # the standalone omni server doubles as the router: the adapter posts straight to it
-        f"--sglang-router-ip {args.omni_server_ip} "
-        f"--sglang-router-port {args.omni_server_port} "
+        f"--sglang-router-ip {args.omni_router_ip} "
+        f"--sglang-router-port {args.omni_router_port} "
         "--rollout-external "
         f"--rollout-external-engine-addrs {args.omni_server_ip}:{args.omni_server_port} "
         "--rollout-external-admin-api sglang-omni "

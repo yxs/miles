@@ -9,7 +9,6 @@ import numpy as np
 import pybase64
 import torch
 
-from miles.utils.http_utils import post
 from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
 from miles.utils.processing_utils import (
     call_processor,
@@ -61,23 +60,6 @@ def compute_prompt_ids_from_sample(state, sample, tools=None):
             )
 
         return state.tokenizer.encode(prompt, add_special_tokens=False)
-
-
-def is_omni_external_admin(args) -> bool:
-    return getattr(args, "rollout_external_admin_api", "sglang") == "sglang-omni"
-
-
-async def abort_external_omni_requests(args) -> None:
-    """Abort in-flight generation on external sglang-omni servers.
-
-    A bare omni server exposes neither the router /workers listing nor /abort_request;
-    pause_generation(mode="abort") followed by continue_generation is the omni-native
-    equivalent of abort_all.
-    """
-    for addr in args.rollout_external_engine_addrs:
-        base_url = f"http://{addr}"
-        await post(f"{base_url}/pause_generation", {"mode": "abort"})
-        await post(f"{base_url}/continue_generation", {})
 
 
 def policy_uses_routing_key(args) -> bool:

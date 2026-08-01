@@ -7,52 +7,26 @@ from typing import Any
 
 import numpy as np
 import pybase64
-import torch
 
 from miles.utils.lora import LORA_ADAPTER_NAME, is_lora_enabled
-from miles.utils.processing_utils import (
-    call_processor,
-    encode_image_for_rollout_engine,
-    extract_multimodal_train_inputs,
-)
+from miles.utils.processing_utils import encode_image_for_rollout_engine
 from miles.utils.types import Sample
-
-
-def serialize_multimodal_train_inputs(
-    multimodal_train_inputs: dict[str, torch.Tensor],
-) -> dict[str, Any]:
-    """Encode the processor tensor kwargs shared with SGLang Omni."""
-    tensors: dict[str, dict[str, Any]] = {}
-    for name, tensor in multimodal_train_inputs.items():
-        tensor = tensor.detach().cpu().contiguous()
-        dtype = str(tensor.dtype).removeprefix("torch.")
-        raw = tensor.reshape(-1).view(torch.uint8).numpy().tobytes()
-        tensors[name] = {
-            "dtype": dtype,
-            "shape": list(tensor.shape),
-            "data": pybase64.b64encode(raw).decode("ascii"),
-        }
-
-    return {"version": 1, "tensors": tensors}
 
 
 # Make this an isolated function because users may want to compute their own
 def compute_prompt_ids_from_sample(state, sample, tools=None):
     prompt = sample.prompt
 
-    if (
-        state.processor
-        and sample.multimodal_inputs
-        and any(value is not None for value in sample.multimodal_inputs.values())
-    ):
-        processor_output = call_processor(state.processor, prompt, sample.multimodal_inputs)
+    if state.processor and sample.multimodal_inputs and any(v is not None for v in sample.multimodal_inputs.values()):
+        processor_output = state.processor(text=prompt, **sample.multimodal_inputs)
         prompt_ids = processor_output["input_ids"][0]
 
-        sample.multimodal_train_inputs = extract_multimodal_train_inputs(processor_output)
+        # TODO shall we move it to other places? then can make this function immutable
+        sample.multimodal_train_inputs = {
+            k: v for k, v in processor_output.items() if k not in ["input_ids", "attention_mask"]
+        } or None
 
-        if hasattr(prompt_ids, "tolist"):
-            prompt_ids = prompt_ids.tolist()
-        return [int(token_id) for token_id in prompt_ids]
+        return prompt_ids
     else:
         if not isinstance(prompt, str):
             prompt = state.tokenizer.apply_chat_template(
@@ -82,7 +56,6 @@ def compute_request_payload(
     input_ids: list[int],
     sampling_params: dict,
     multimodal_inputs: dict | None = None,
-    multimodal_train_inputs: dict[str, torch.Tensor] | None = None,
 ) -> tuple[dict[str, Any] | None, Sample.Status | None]:
     sampling_params = deepcopy(sampling_params)
     max_new_tokens = sampling_params.pop("max_new_tokens", args.rollout_max_response_len)
@@ -100,9 +73,7 @@ def compute_request_payload(
     }
     if is_lora_enabled(args):
         payload["lora_path"] = LORA_ADAPTER_NAME
-    if multimodal_train_inputs:
-        payload["multimodal_train_inputs"] = serialize_multimodal_train_inputs(multimodal_train_inputs)
-    elif image_data := (multimodal_inputs or {}).get("images"):
+    if image_data := (multimodal_inputs or {}).get("images"):
         payload["image_data"] = [encode_image_for_rollout_engine(image) for image in image_data]
 
     return payload, None

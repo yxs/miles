@@ -5,10 +5,9 @@ import logging
 import os
 from pathlib import Path
 
-import torch
 from huggingface_hub import hf_hub_download
 from tokenizers import Tokenizer as RawTokenizer
-from transformers import AutoProcessor, AutoTokenizer, PreTrainedTokenizerBase, ProcessorMixin, Qwen3OmniMoeProcessor
+from transformers import AutoProcessor, AutoTokenizer, PreTrainedTokenizerBase, ProcessorMixin
 
 from miles.utils.hf_config import register_hf_config_aliases
 
@@ -138,15 +137,6 @@ def call_processor(processor, text, multimodal_inputs: dict | None = None):
     return processor(text=text, **kwargs)
 
 
-def extract_multimodal_train_inputs(processor_output):
-    """Normalize processor kwargs to the tensor-only Megatron contract."""
-    return {
-        name: torch.as_tensor(value)
-        for name, value in processor_output.items()
-        if name not in ("input_ids", "attention_mask")
-    } or None
-
-
 def load_processor(name_or_path: str, **kwargs):
     try:
         proc = AutoProcessor.from_pretrained(name_or_path, **kwargs)
@@ -163,16 +153,6 @@ def load_processor(name_or_path: str, **kwargs):
 
 def process_vision_info(prompt, processor):
     # TODO: temporary solution, will write image utils for miles later
-    if isinstance(processor, Qwen3OmniMoeProcessor):
-        from qwen_omni_utils import process_mm_info
-
-        audios, images, videos = process_mm_info(
-            prompt,
-            use_audio_in_video=False,
-            image_patch_size=processor.image_processor.patch_size,
-        )
-        return {"audio": audios, "images": images, "videos": videos}
-
     from qwen_vl_utils import process_vision_info as qwen_process_vision_info
 
     if hasattr(processor.image_processor, "patch_size"):
